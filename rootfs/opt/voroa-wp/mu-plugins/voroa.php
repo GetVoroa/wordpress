@@ -85,6 +85,10 @@ add_action('init', function () {
 	$voroa = '/\.(onvoroa|getvoroa)\.com(:\d+)?$/i';
 	$stored_host = (string) parse_url($stored, PHP_URL_HOST);
 	$current_host = (string) parse_url(WP_HOME, PHP_URL_HOST);
+	// A health probe or a loopback call (127.0.0.1, localhost, a bare container name) is not a real address.
+	if ($current_host === '' || strpos($current_host, '.') === false || filter_var($current_host, FILTER_VALIDATE_IP)) {
+		return;
+	}
 	$stale = $stored_host === 'localhost' || $stored_host === ''
 		|| (preg_match($voroa, $stored_host) && !preg_match($voroa, $current_host));
 	if ($stale && $stored !== WP_HOME) {
