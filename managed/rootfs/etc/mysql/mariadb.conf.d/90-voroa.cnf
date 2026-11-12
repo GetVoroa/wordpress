@@ -1,0 +1,16 @@
+# Voroa Managed WordPress: the database lives on the site's disk and listens on NO network port
+# (a unix socket only - the container keeps exactly one network listener, nginx on $PORT).
+[mysqld]
+datadir = /data/mysql
+socket = /run/mysqld/mysqld.sock
+skip-networking = 1
+skip-name-resolve = 1
+performance_schema = OFF
+max_connections = 40
+character-set-server = utf8mb4
+collation-server = utf8mb4_unicode_520_ci
+max_allowed_packet = 64M
+!include /run/voroa-mariadb-size.cnf
+
+[client]
+socket = /run/mysqld/mysqld.sock
