@@ -1,0 +1,17 @@
+#!/bin/bash
+# Consistent database dump onto the site's disk, run by the platform's nightly disk backup just before it copies
+# the disk (ADR-0379). Keeps at most two dumps; refuses (exit 3) when free space is under twice the last dump,
+# because filling the disk would stop MariaDB. Prints one short status line.
+set -euo pipefail
+B=/data/backup
+mkdir -p "$B"
+LAST=$(ls -1t "$B"/db-*.sql.gz 2>/dev/null | head -1 || true)
+NEED=$(( ${LAST:+$(stat -c %s "$LAST")}+0 ))
+NEED=$(( NEED * 2 ))
+FREE=$(( $(df --output=avail -B1 /data | tail -1) ))
+if [ "$NEED" -gt 0 ] && [ "$FREE" -lt "$NEED" ]; then echo "voroa-db-dump: skipped, low disk"; exit 3; fi
+OUT="$B/db-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"
+mariadb-dump -uroot --single-transaction --quick --routines --events wordpress | gzip -6 > "$OUT.part"
+mv "$OUT.part" "$OUT"
+ls -1t "$B"/db-*.sql.gz | tail -n +3 | xargs -r rm -f
+echo "voroa-db-dump: ok $(basename "$OUT") $(stat -c %s "$OUT") bytes"

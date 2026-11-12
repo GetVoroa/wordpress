@@ -32,6 +32,12 @@ if ($voroa_url !== '') {
 	}
 }
 
+// Managed WordPress (database inside the container): the account is on the site's disk, never in env.
+if (is_readable('/data/voroa/db.php')) {
+	require '/data/voroa/db.php';
+	$voroa_db = array('host' => VOROA_DB_HOST, 'user' => VOROA_DB_USER, 'pass' => VOROA_DB_PASSWORD, 'name' => VOROA_DB_NAME);
+}
+
 define('DB_NAME', $voroa_db['name']);
 define('DB_USER', $voroa_db['user']);
 define('DB_PASSWORD', $voroa_db['pass']);

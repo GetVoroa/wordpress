@@ -42,6 +42,14 @@ on the same disk.
 Each release is a tag such as `wp-7.1.4-php8.4-r1` (WordPress version, PHP version, release number).
 Point your service at a tag, not at `main`, so a redeploy never changes WordPress unexpectedly.
 
+## Managed WordPress (database inside)
+
+`managed/Dockerfile` builds the same WordPress with **MariaDB 10.11 inside the container** (Voroa Managed
+WordPress). Everything lives on one disk mounted at `/data`: `wp-content`, the database files and nightly dumps.
+The database listens on no network port (unix socket only), its password is created on first start and kept on
+the disk (never in environment variables), and the container restarts if the database stops. Tags:
+`wpm-<wordpress>-php<php>-mariadb<version>-r<n>`.
+
 ## Documentation
 
 Step-by-step guide: [getvoroa.com/docs/wordpress](https://getvoroa.com/docs/wordpress)

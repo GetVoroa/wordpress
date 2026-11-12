@@ -13,8 +13,9 @@ if [ ! -d "$CONTENT/themes" ]; then
   cp -a /usr/src/wp-content-seed/. "$CONTENT/"
 fi
 mkdir -p "$CONTENT/uploads" "$CONTENT/voroa"
-if [ -n "$(find "$CONTENT" ! -user www-data -print -quit 2>/dev/null)" ]; then
-  chown -R www-data:www-data "$CONTENT"
+# Trailing slash: wp-content may be a symlink onto the disk (Managed WordPress) - look inside it, not at the link.
+if [ -n "$(find "$CONTENT/" ! -user www-data -print -quit 2>/dev/null)" ]; then
+  chown -R www-data:www-data "$CONTENT/"
 fi
 
 # --- salts: generated once, kept on the disk ---------------------------------------------------
