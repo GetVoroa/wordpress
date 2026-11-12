@@ -71,3 +71,26 @@ foreach (array('save_post', 'deleted_post', 'trashed_post', 'edit_post', 'commen
 	add_action($voroa_hook, 'voroa_purge_page_cache');
 }
 unset($voroa_hook);
+
+// ---- Keep the stored site address useful for emails and scheduled jobs ------------------------
+// Pages answer on whichever address they are opened on (wp-config). Scheduled jobs have no address, so they use
+// the stored one: keep it on the customer's own domain once one is used, else on the Voroa address.
+add_action('init', function () {
+	if (!defined('WP_HOME') || getenv('WP_HOME') || empty($_SERVER['HTTP_HOST'])) {
+		return;
+	}
+	global $wpdb;
+	// The raw stored value: get_option('home') returns the WP_HOME constant once it is defined.
+	$stored = (string) $wpdb->get_var("SELECT option_value FROM {$wpdb->options} WHERE option_name = 'home'");
+	$voroa = '/\.(onvoroa|getvoroa)\.com(:\d+)?$/i';
+	$stored_host = (string) parse_url($stored, PHP_URL_HOST);
+	$current_host = (string) parse_url(WP_HOME, PHP_URL_HOST);
+	$stale = $stored_host === 'localhost' || $stored_host === ''
+		|| (preg_match($voroa, $stored_host) && !preg_match($voroa, $current_host));
+	if ($stale && $stored !== WP_HOME) {
+		// Direct write: update_option() compares against the constant and would skip it as "unchanged".
+		$wpdb->update($wpdb->options, array('option_value' => WP_HOME), array('option_name' => 'home'));
+		$wpdb->update($wpdb->options, array('option_value' => WP_HOME), array('option_name' => 'siteurl'));
+		wp_cache_delete('alloptions', 'options');
+	}
+});

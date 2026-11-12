@@ -26,6 +26,8 @@ service next to a managed MySQL database.
 |---|---|
 | `DATABASE_URL` | `mysql://user:password@host:port/database` - copy it from your MySQL database's Connect tab. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_SECURE` | Outgoing email (password resets, contact forms, order emails) through your email provider, for example Zoho Mail, Google Workspace, Amazon SES or Brevo. `SMTP_SECURE` is `tls` (default), `ssl` or `none`. |
+| `WP_SITE_TITLE`, `WP_ADMIN_USER`, `WP_ADMIN_EMAIL`, `WP_ADMIN_PASSWORD` | Installs WordPress on first start with this admin account. The web installer is never reachable, so nobody else can claim a new site. |
+| `WP_HOME` | Optional. Pins the site to one address. Without it the site answers on any of its own addresses (the Voroa address and your domain) and remembers your own domain for emails. |
 | `WP_DEBUG` | Set to `1` to write PHP and WordPress errors to the service logs. They are never shown to visitors. |
 | `DB_MAX_CONNECTIONS` | The database's connection limit (default 30). PHP workers stay 6 below it. |
 
