@@ -1,0 +1,14 @@
+#!/bin/bash
+# Runs WordPress scheduled events every minute (WP-Cron is disabled on page loads).
+# A failure here never stops the site; the loop just tries again next minute.
+while true; do
+  sleep 60
+  if su -s /bin/sh www-data -c "wp core is-installed --path=/var/www/html" >/dev/null 2>&1; then
+    flock -n /tmp/voroa-cron.lock timeout 50 su -s /bin/sh www-data -c \
+      "wp cron event run --due-now --quiet --path=/var/www/html" >/dev/null 2>&1 || true
+    if su -s /bin/sh www-data -c "wp plugin is-active woocommerce --path=/var/www/html" >/dev/null 2>&1; then
+      flock -n /tmp/voroa-cron.lock timeout 50 su -s /bin/sh www-data -c \
+        "wp action-scheduler run --batch-size=25 --quiet --path=/var/www/html" >/dev/null 2>&1 || true
+    fi
+  fi
+done

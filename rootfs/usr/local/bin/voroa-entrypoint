@@ -1,0 +1,60 @@
+#!/bin/bash
+# PID 1: prepares wp-content, starts php-fpm (unix socket) + nginx ($PORT) + the cron loop.
+# If nginx or php-fpm dies the container exits, so the platform restarts it and the uptime check sees it.
+set -euo pipefail
+
+PORT="${PORT:-3000}"
+WP=/var/www/html
+CONTENT="$WP/wp-content"
+
+# --- wp-content: seed on first boot, keep ownership right on every boot -------------------------
+if [ ! -d "$CONTENT/themes" ]; then
+  echo "[voroa-wp] seeding wp-content"
+  cp -a /usr/src/wp-content-seed/. "$CONTENT/"
+fi
+mkdir -p "$CONTENT/uploads" "$CONTENT/voroa"
+if [ -n "$(find "$CONTENT" ! -user www-data -print -quit 2>/dev/null)" ]; then
+  chown -R www-data:www-data "$CONTENT"
+fi
+
+# --- salts: generated once, kept on the disk ---------------------------------------------------
+SALTS="$CONTENT/voroa/salts.php"
+if [ ! -s "$SALTS" ]; then
+  php -r '$k=["AUTH_KEY","SECURE_AUTH_KEY","LOGGED_IN_KEY","NONCE_KEY","AUTH_SALT","SECURE_AUTH_SALT","LOGGED_IN_SALT","NONCE_SALT"];
+    $o="<?php\n"; foreach($k as $n){ $o.="define(\x27$n\x27, \x27".bin2hex(random_bytes(32))."\x27);\n"; }
+    file_put_contents($argv[1], $o);' "$SALTS"
+  chown www-data:www-data "$SALTS"; chmod 600 "$SALTS"
+fi
+
+# --- php-fpm workers: bounded by memory AND by the database's connection limit ------------------
+MEM_MAX=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)
+if [ "$MEM_MAX" = "max" ]; then MEM_MB=1024; else MEM_MB=$(( MEM_MAX / 1048576 )); fi
+BY_MEM=$(( (MEM_MB - 192) / 64 )); [ "$BY_MEM" -lt 2 ] && BY_MEM=2
+DB_CONN="${DB_MAX_CONNECTIONS:-30}"
+BY_DB=$(( DB_CONN - 6 )); [ "$BY_DB" -lt 2 ] && BY_DB=2
+CHILDREN=$(( BY_MEM < BY_DB ? BY_MEM : BY_DB ))
+sed -i "s/^pm.max_children = .*/pm.max_children = ${CHILDREN}/" /usr/local/etc/php-fpm.d/voroa.conf
+echo "[voroa-wp] memory ${MEM_MB} MB, php workers ${CHILDREN}"
+
+# --- nginx: port + trusted proxies for the real visitor IP --------------------------------------
+sed -i "s/listen [0-9]*;/listen ${PORT};/" /etc/nginx/conf.d/voroa-wordpress.conf
+: > /etc/nginx/voroa-realip.conf
+for cidr in ${TRUSTED_PROXIES:-10.0.0.0/8 172.16.0.0/12 192.168.0.0/16}; do
+  echo "set_real_ip_from ${cidr};" >> /etc/nginx/voroa-realip.conf
+done
+
+# --- start, and exit if either core process stops -----------------------------------------------
+php-fpm --nodaemonize --fpm-config /usr/local/etc/php-fpm.conf &
+FPM=$!
+nginx -g 'daemon off;' &
+NGINX=$!
+/usr/local/bin/voroa-cron &
+CRON=$!
+
+term() { kill -TERM "$NGINX" "$FPM" 2>/dev/null || true; kill "$CRON" 2>/dev/null || true; wait "$NGINX" "$FPM" 2>/dev/null || true; exit 0; }
+trap term TERM INT
+
+wait -n "$FPM" "$NGINX" || true
+echo "[voroa-wp] nginx or php-fpm stopped - exiting so the platform restarts the service" >&2
+kill -TERM "$NGINX" "$FPM" "$CRON" 2>/dev/null || true
+exit 1
