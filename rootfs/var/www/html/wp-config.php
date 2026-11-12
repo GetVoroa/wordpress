@@ -4,6 +4,8 @@
  *   DATABASE_URL   mysql://user:password@host:port/database   (copy it from your MySQL "Connect" tab)
  *   or WORDPRESS_DB_HOST / WORDPRESS_DB_USER / WORDPRESS_DB_PASSWORD / WORDPRESS_DB_NAME
  *   WP_DEBUG=1     turn on debug logging (to the service logs, never shown to visitors)
+ *   WP_SITE_TITLE / WP_ADMIN_USER / WP_ADMIN_EMAIL / WP_ADMIN_PASSWORD   first-start install (the web
+ *                  installer is never exposed, so nobody else can claim a new site)
  *   SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASSWORD / SMTP_FROM / SMTP_SECURE   outgoing email
  * Security keys are generated once and kept in wp-content/voroa/salts.php.
  */
@@ -47,6 +49,19 @@ if (is_readable(__DIR__ . '/wp-content/voroa/salts.php')) {
 // TLS ends at the platform edge.
 if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
 	$_SERVER['HTTPS'] = 'on';
+}
+
+// The site answers on whichever of its own addresses it was opened on (the Voroa address and your domain), so
+// there is no "change the WordPress address" step. Only hostnames routed to this site reach it. Set WP_HOME to
+// pin one address instead.
+if (voroa_env('WP_HOME') !== '') {
+	define('WP_HOME', rtrim(voroa_env('WP_HOME'), '/'));
+	define('WP_SITEURL', rtrim(voroa_env('WP_HOME'), '/'));
+} elseif (!empty($_SERVER['HTTP_HOST']) && preg_match('/^[A-Za-z0-9.-]+(:[0-9]+)?$/', $_SERVER['HTTP_HOST'])) {
+	$voroa_scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https' : 'http';
+	define('WP_HOME', $voroa_scheme . '://' . $_SERVER['HTTP_HOST']);
+	define('WP_SITEURL', $voroa_scheme . '://' . $_SERVER['HTTP_HOST']);
+	unset($voroa_scheme);
 }
 
 // Scheduled events run every minute inside the container, not on visitor page loads.

@@ -51,6 +51,29 @@ NGINX=$!
 /usr/local/bin/voroa-cron &
 CRON=$!
 
+# --- first-start install from the site's settings (the web installer is blocked in nginx) ---------
+# Retries until the database answers. The password goes on stdin, never on a command line.
+voroa_install() {
+  local wpc="wp --path=$WP --skip-plugins --skip-themes"
+  for _ in $(seq 1 120); do
+    if su -s /bin/sh www-data -c "$wpc core is-installed" >/dev/null 2>&1; then return 0; fi
+    if [ -z "${WP_ADMIN_USER:-}" ] || [ -z "${WP_ADMIN_EMAIL:-}" ] || [ -z "${WP_ADMIN_PASSWORD:-}" ]; then
+      echo "[voroa-wp] not installed and no WP_ADMIN_USER / WP_ADMIN_EMAIL / WP_ADMIN_PASSWORD set - waiting" >&2
+      return 0
+    fi
+    if su -s /bin/sh www-data -c "$wpc db check" >/dev/null 2>&1; then
+      if printf '%s' "$WP_ADMIN_PASSWORD" | su -s /bin/sh www-data -c "$wpc core install --url=\"\${WP_HOME:-http://localhost}\" --title=\"\${WP_SITE_TITLE:-My WordPress site}\" --admin_user=\"\$WP_ADMIN_USER\" --admin_email=\"\$WP_ADMIN_EMAIL\" --prompt=admin_password --skip-email" >/dev/null 2>&1; then
+        su -s /bin/sh www-data -c "$wpc option update timezone_string \"\${WP_TIMEZONE:-Asia/Kolkata}\"" >/dev/null 2>&1 || true
+        echo "[voroa-wp] WordPress installed for ${WP_ADMIN_USER}"
+        return 0
+      fi
+    fi
+    sleep 10
+  done
+  echo "[voroa-wp] install did not complete - check DATABASE_URL" >&2
+}
+voroa_install &
+
 term() { kill -TERM "$NGINX" "$FPM" 2>/dev/null || true; kill "$CRON" 2>/dev/null || true; wait "$NGINX" "$FPM" 2>/dev/null || true; exit 0; }
 trap term TERM INT
 
