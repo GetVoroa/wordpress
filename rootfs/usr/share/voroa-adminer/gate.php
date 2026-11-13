@@ -41,24 +41,29 @@ $sid = (string) ($_COOKIE[COOKIE] ?? '');
 if (!preg_match('/^[0-9a-f]{64}$/', $sid)) nope();
 $sf = STATE . '/sessions/' . h($sid);
 if (!is_file($sf) || filemtime($sf) < time() - IDLE) { @unlink($sf); nope(); }
-$fresh = trim((string) file_get_contents($sf)) === 'new';
 file_put_contents($sf, 'live'); // also refreshes the idle clock
 
+// Adminer's own session rides OUR cookie: the gate starts it (id derived from the gate session, no second cookie),
+// and fills in the site's database account on every request - the gate already decided this browser may in. The
+// password stays in the server-side session file and in this process; it is never sent to the browser.
 require '/data/voroa/db.php';
-// first page of a session: log in to Adminer server-side (Adminer then redirects and keeps its own session)
-if ($fresh) {
-	$_SERVER['REQUEST_METHOD'] = 'POST';
-	$_POST['auth'] = ['driver' => 'server', 'server' => VOROA_DB_HOST, 'username' => VOROA_DB_USER, 'password' => VOROA_DB_PASSWORD, 'db' => VOROA_DB_NAME];
+ini_set('session.use_cookies', '0');
+ini_set('session.use_only_cookies', '0');
+session_name('adminer_sid');
+session_id(substr(h('adminer:' . $sid), 0, 48));
+session_start();
+$_SESSION['pwds']['server'][VOROA_DB_HOST][VOROA_DB_USER] = VOROA_DB_PASSWORD;
+$_SESSION['db']['server'][VOROA_DB_HOST][VOROA_DB_USER][VOROA_DB_NAME] = true;
+foreach (['server' => VOROA_DB_HOST, 'username' => VOROA_DB_USER, 'db' => VOROA_DB_NAME] as $k => $v) {
+	if (!isset($_GET[$k]) || $_GET[$k] !== $v) $_GET[$k] = $v; // only this site's database, whatever the URL asked for
 }
+unset($_POST['auth']); // no login form: nobody signs in to another server through this door
 
 function adminer_object() {
 	return new class extends \Adminer\Adminer {
 		function name() { return 'Database'; }
 		function credentials() { return [VOROA_DB_HOST, VOROA_DB_USER, VOROA_DB_PASSWORD]; }
 		function login($login, $password) { return true; }
-		// The login POST is made by THIS gate, server-side, on the first page of a session it just created from a
-		// one-time link - never by a browser form - so Adminer's login-form CSRF token does not apply to it.
-		function verifyLoginToken() { return false; }
 		function databases($flush = true) { return [VOROA_DB_NAME]; }
 	};
 }
