@@ -41,6 +41,66 @@ function must(array $r, string $msg): string {
 }
 function jsonList(string $s): array { $v = json_decode($s, true); return is_array($v) ? $v : []; }
 
+// content_file(rel, ext) -> the real path of an existing .<ext> file inside wp-content (never a link, never outside).
+function content_file($rel, string $ext): string {
+	if (!is_string($rel) || !preg_match('#^[A-Za-z0-9._/-]{1,300}\.' . $ext . '$#', $rel) || strpos($rel, '..') !== false) fail('bad_path', "Choose a .{$ext} file inside wp-content.");
+	$root = realpath(WP . '/wp-content');
+	$abs = WP . '/wp-content/' . ltrim($rel, '/');
+	$src = realpath($abs);
+	if ($src === false || strpos($src, $root . '/') !== 0 || is_link($abs) || !is_file($src)) fail('not_found', "That .{$ext} file was not found in wp-content.");
+	return $src;
+}
+// The dump's table prefix, read from its first `...options` table (null when the dump names none).
+function sql_prefix(string $src): ?string {
+	$in = fopen($src, 'rb');
+	$n = 0;
+	while ($in && ($line = fgets($in)) !== false && $n++ < 200000) {
+		if (preg_match('/CREATE TABLE `([A-Za-z0-9_]*?)options`/', $line, $m)) { fclose($in); return $m[1]; }
+	}
+	if ($in) fclose($in);
+	return null;
+}
+// Import with MySQL 8's utf8mb4_0900_* collations rewritten to utf8mb4_unicode_520_ci (MariaDB has no 0900 set).
+function import_sql(string $src): void {
+	$tmp = tempnam(sys_get_temp_dir(), 'voroa-import');
+	$in = fopen($src, 'rb'); $outF = fopen($tmp, 'wb');
+	if (!$in || !$outF) fail('read_failed', 'The file could not be read.');
+	while (($line = fgets($in)) !== false) { fwrite($outF, preg_replace('/utf8mb4_0900_[a-z_]+/', 'utf8mb4_unicode_520_ci', $line)); }
+	fclose($in); fclose($outF);
+	$r = wp(['db', 'import', $tmp, '--skip-plugins', '--skip-themes']);
+	@unlink($tmp);
+	if ($r['code'] !== 0) fail('wp_failed', 'The import failed: ' . substr(trim($r['err']), 0, 300));
+}
+// Unzip into wp-content. Entry names are checked one by one: no absolute path, no "..", nothing into voroa/ (salts);
+// a leading "wp-content/" folder is dropped so both zip shapes work. Returns the number of files written.
+function unzip_content(string $zipFile): int {
+	$z = new ZipArchive();
+	if ($z->open($zipFile) !== true) fail('bad_zip', 'That zip file could not be opened.');
+	$root = realpath(WP . '/wp-content');
+	$files = 0;
+	for ($i = 0; $i < $z->numFiles; $i++) {
+		$name = str_replace('\\', '/', (string) $z->getNameIndex($i));
+		$rel = preg_replace('#^wp-content/#', '', ltrim($name, '/'));
+		if ($rel === '' || substr($rel, -1) === '/') continue;
+		$segs = explode('/', $rel);
+		if (in_array('..', $segs, true) || in_array('.', $segs, true) || $segs[0] === 'voroa' || strpos($name, "\0") !== false || preg_match('#^[A-Za-z]:#', $name)) {
+			$z->close();
+			fail('bad_zip', 'The zip has a file outside wp-content (' . substr($name, 0, 120) . ').');
+		}
+		$dest = $root . '/' . $rel;
+		if (!is_dir(dirname($dest)) && !mkdir(dirname($dest), 0755, true)) { $z->close(); fail('write_failed', 'A folder could not be created.'); }
+		if (is_link($dest)) { $z->close(); fail('bad_zip', 'The zip would write through a link.'); }
+		$inS = $z->getStream($z->getNameIndex($i));
+		$outS = $inS ? fopen($dest, 'wb') : false;
+		if (!$inS || !$outS) { $z->close(); fail('write_failed', 'A file could not be written.'); }
+		stream_copy_to_stream($inS, $outS);
+		fclose($inS); fclose($outS);
+		$files++;
+	}
+	$z->close();
+	return $files;
+}
+
 $op = $req['op'];
 switch ($op) {
 	case 'plugins':
@@ -110,22 +170,30 @@ switch ($op) {
 	}
 	// Import a .sql file already on the site (uploaded with the File Manager or SFTP, inside wp-content). MySQL 8 dumps
 	// name utf8mb4_0900_* collations MariaDB does not have: they are rewritten to utf8mb4_unicode_520_ci first.
-	case 'db_import': {
-		$rel = $req['path'] ?? '';
-		if (!is_string($rel) || !preg_match('#^[A-Za-z0-9._/-]{1,300}\.sql$#', $rel) || strpos($rel, '..') !== false) fail('bad_path', 'Choose a .sql file inside wp-content.');
-		$root = realpath(WP . '/wp-content');
-		$src = realpath(WP . '/wp-content/' . ltrim($rel, '/'));
-		if ($src === false || strpos($src, $root . '/') !== 0 || is_link(WP . '/wp-content/' . ltrim($rel, '/'))) fail('not_found', 'That .sql file was not found in wp-content.');
-		$tmp = tempnam(sys_get_temp_dir(), 'voroa-import');
-		$in = fopen($src, 'rb'); $outF = fopen($tmp, 'wb');
-		if (!$in || !$outF) fail('read_failed', 'The file could not be read.');
-		while (($line = fgets($in)) !== false) { fwrite($outF, preg_replace('/utf8mb4_0900_[a-z_]+/', 'utf8mb4_unicode_520_ci', $line)); }
-		fclose($in); fclose($outF);
-		$r = wp(['db', 'import', $tmp, '--skip-plugins', '--skip-themes']);
-		@unlink($tmp);
-		if ($r['code'] !== 0) fail('wp_failed', 'The import failed: ' . substr(trim($r['err']), 0, 300));
+	case 'db_import':
+		import_sql(content_file($req['path'] ?? '', 'sql'));
 		wp(['cache', 'flush', '--skip-plugins', '--skip-themes']);
 		out(['ok' => true]);
+	// Migrate in (PR F): a site from another host - its database dump and (optionally) a zip of its wp-content, both
+	// already in wp-content (File Manager or SFTP). Unzip (zip-slip safe, never over wp-content/voroa), import, then
+	// replace the old address with this site's. A dump with a table prefix other than wp_ is refused with the reason.
+	case 'migrate': {
+		$sql = content_file($req['sqlPath'] ?? '', 'sql');
+		$prefix = sql_prefix($sql);
+		if ($prefix !== null && $prefix !== 'wp_') fail('prefix', "That database uses the table prefix \"{$prefix}\". Ask us for migration help - we move sites like this for free.");
+		$files = 0;
+		if (!empty($req['zipPath'])) $files = unzip_content(content_file($req['zipPath'], 'zip'));
+		import_sql($sql);
+		$count = 0;
+		if (!empty($req['from']) && !empty($req['to']) && $req['from'] !== $req['to']) {
+			$from = url($req['from']); $to = url($req['to']);
+			$count = (int) trim(must(wp(['search-replace', $from, $to, '--all-tables-with-prefix', '--precise', '--skip-columns=guid', '--format=count', '--skip-plugins', '--skip-themes']), 'The addresses could not be replaced.'));
+			wp(['option', 'update', 'home', $to, '--skip-plugins', '--skip-themes']);
+			wp(['option', 'update', 'siteurl', $to, '--skip-plugins', '--skip-themes']);
+		}
+		wp(['cache', 'flush', '--skip-plugins', '--skip-themes']);
+		if (function_exists('opcache_reset')) opcache_reset();
+		out(['ok' => true, 'files' => $files, 'replaced' => $count]);
 	}
 	// The PHP settings the site RUNS with (the panel shows these - read live, not from stored settings).
 	case 'php':

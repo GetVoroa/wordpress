@@ -101,6 +101,32 @@ jobs:
           no() { echo "$2" | grep -q "\"code\":\"$3\"" || { echo "FAIL (expected $3): $1 -> $2"; exit 1; }; }
           no escape "$(wpx '{"op":"db_import","path":"../../etc/x.sql"}')" bad_path
           echo "database ok"
+      - name: Migrate in
+        run: |
+          set -u
+          wpx() { printf '%s' "$1" | base64 -w0 | docker exec -i -u www-data site /usr/local/bin/voroa-wp; }
+          put() { printf '{"op":"write","path":"%s","contentB64":"%s"}' "$1" "$(base64 -w0 < "$2")" | base64 -w0 | docker exec -i -u www-data site /usr/local/bin/voroa-fm | grep -q '"ok":true' || { echo "FAIL put $1"; exit 1; }; }
+          no() { echo "$2" | grep -q "\"code\":\"$3\"" || { echo "FAIL (expected $3): $1 -> $2"; exit 1; }; }
+          # a dump of this very site (wp_ prefix, home http://localhost:8080) stands in for the old host's
+          wpx '{"op":"db_export"}' | grep -q '"ok":true'
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile('/tmp/good.zip', 'w') as z: z.writestr('wp-content/uploads/migrated.txt', 'from the old host')
+          with zipfile.ZipFile('/tmp/evil.zip', 'w') as z: z.writestr('../../evil.php', '<?php echo 1;')
+          with zipfile.ZipFile('/tmp/salts.zip', 'w') as z: z.writestr('voroa/salts.php', 'x')
+          open('/tmp/prefix.sql', 'w').write('CREATE TABLE `xyz_options` (a int);\n')
+          PY
+          put voroa-import/good.zip /tmp/good.zip; put voroa-import/evil.zip /tmp/evil.zip; put voroa-import/salts.zip /tmp/salts.zip; put voroa-import/prefix.sql /tmp/prefix.sql
+          r=$(wpx '{"op":"migrate","sqlPath":"voroa-export/database.sql","zipPath":"voroa-import/good.zip","from":"http://localhost:8080","to":"https://moved.example.org"}')
+          echo "$r" | grep -q '"ok":true' || { echo "FAIL migrate: $r"; exit 1; }
+          echo "$r" | grep -q '"files":1' || { echo "FAIL files: $r"; exit 1; }
+          docker exec site cat /var/www/html/wp-content/uploads/migrated.txt | grep -q 'old host' || { echo "FAIL: zip not unpacked"; exit 1; }
+          docker exec -u www-data site wp --path=/var/www/html option get home | grep -q 'https://moved.example.org' || { echo "FAIL: address not replaced"; exit 1; }
+          no evilzip "$(wpx '{"op":"migrate","sqlPath":"voroa-export/database.sql","zipPath":"voroa-import/evil.zip"}')" bad_zip
+          docker exec site test ! -e /var/www/html/evil.php || { echo "FAIL: zip-slip wrote outside"; exit 1; }
+          no saltszip "$(wpx '{"op":"migrate","sqlPath":"voroa-export/database.sql","zipPath":"voroa-import/salts.zip"}')" bad_zip
+          no prefix "$(wpx '{"op":"migrate","sqlPath":"voroa-import/prefix.sql"}')" prefix
+          echo "migrate ok"
       - name: Logs on failure
         if: failure()
         run: docker logs site 2>&1 | tail -80
