@@ -29,8 +29,8 @@ fi
 
 # --- per-site PHP settings (the Voroa panel's PHP settings tab sets these env vars) -----------------
 # Each value is checked here against a fixed range; anything else is dropped, so a bad value can never reach PHP.
-# zz-voroa-site.ini sorts after zz-voroa.ini, so a set value wins over the image default.
-SITE_INI=/usr/local/etc/php/conf.d/zz-voroa-site.ini
+# zzz-voroa-site.ini sorts after zz-voroa.ini, so a set value wins over the image default.
+SITE_INI=/usr/local/etc/php/conf.d/zzz-voroa-site.ini
 : > "$SITE_INI"
 in_range() { case "$1" in ''|*[!0-9]*) return 1;; esac; [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]; }
 if in_range "${PHP_MEMORY_LIMIT_MB:-}" 128 1024; then echo "memory_limit = ${PHP_MEMORY_LIMIT_MB}M" >> "$SITE_INI"; fi
