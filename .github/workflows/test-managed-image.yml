@@ -1,0 +1,69 @@
+# Build the Managed WordPress image and prove the panel tools on a REAL running site before a tag is cut:
+# the file manager jail (no escape, no symlink, no hidden salts), the WordPress actions (closed names only), and the
+# per-site PHP settings (a bad value is dropped). Runs on every PR and on main.
+name: test-managed-image
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -f managed/Dockerfile -t wpm-test .
+      - name: Start a site
+        run: |
+          docker run -d --name site -e WP_ADMIN_USER=admin -e WP_ADMIN_EMAIL=admin@example.com \
+            -e WP_ADMIN_PASSWORD=start-password-123 -e WP_HOME=http://localhost:8080 \
+            -e PHP_MEMORY_LIMIT_MB=512 -e PHP_MAX_INPUT_VARS=abc -e PHP_UPLOAD_MAX_MB=32 \
+            -p 8080:3000 wpm-test
+          for i in $(seq 1 90); do
+            docker exec -u www-data site wp --path=/var/www/html core is-installed >/dev/null 2>&1 && break; sleep 2; done
+          docker exec -u www-data site wp --path=/var/www/html core is-installed
+      - name: Tools
+        run: |
+          set -u
+          fm() { printf '%s' "$1" | base64 -w0 | docker exec -i -u www-data site /usr/local/bin/voroa-fm; }
+          wpx() { printf '%s' "$1" | base64 -w0 | docker exec -i -u www-data site /usr/local/bin/voroa-wp; }
+          ok() { echo "$2" | grep -q '"ok":true' || { echo "FAIL (expected ok): $1 -> $2"; exit 1; }; }
+          no() { echo "$2" | grep -q "\"code\":\"$3\"" || { echo "FAIL (expected $3): $1 -> $2"; exit 1; }; }
+          r=$(fm '{"op":"list","path":""}'); ok list "$r"
+          echo "$r" | grep -q '"name":"voroa"' && { echo "FAIL: hidden salts folder listed"; exit 1; }
+          no escape "$(fm '{"op":"read","path":"../wp-config.php"}')" bad_path
+          no abs "$(fm '{"op":"read","path":"/etc/passwd"}')" not_found
+          no hidden "$(fm '{"op":"read","path":"voroa/salts.php"}')" bad_path
+          docker exec site ln -s /etc/passwd /var/www/html/wp-content/link-out
+          no symlink "$(fm '{"op":"read","path":"link-out"}')" bad_path
+          no rmroot "$(fm '{"op":"delete","path":""}')" bad_path
+          ok write "$(fm "{\"op\":\"write\",\"path\":\"themes/note.txt\",\"contentB64\":\"$(printf 'hi' | base64 -w0)\"}")"
+          r=$(fm '{"op":"read","path":"themes/note.txt"}'); ok read "$r"; echo "$r" | grep -q "\"contentB64\":\"aGk=\"" || { echo "FAIL read content"; exit 1; }
+          ok rename "$(fm '{"op":"rename","path":"themes/note.txt","newPath":"themes/note2.txt"}')"
+          ok delete "$(fm '{"op":"delete","path":"themes/note2.txt"}')"
+          no badop "$(fm '{"op":"exec","path":""}')" bad_op
+          ok plugins "$(wpx '{"op":"plugins"}')"
+          ok activate "$(wpx '{"op":"plugin","action":"activate","name":"hello"}')"
+          ok deactivate "$(wpx '{"op":"plugin","action":"deactivate","name":"hello"}')"
+          no flagname "$(wpx '{"op":"plugin","action":"deactivate","name":"--all"}')" bad_name
+          no badaction "$(wpx '{"op":"plugin","action":"install","name":"x"}')" bad_action
+          ok emergency "$(wpx '{"op":"emergency_plugins_off"}')"
+          ok theme "$(wpx '{"op":"emergency_default_theme"}')"
+          ok admins "$(wpx '{"op":"admins"}')"
+          no shortpw "$(wpx '{"op":"admin_password","user":"admin","password":"short"}')" bad_password
+          ok password "$(wpx '{"op":"admin_password","user":"admin","password":"a-new-long-password-1"}')"
+          docker exec -u www-data site wp --path=/var/www/html user check-password admin a-new-long-password-1 \
+            || { echo "FAIL: password not set"; exit 1; }
+          r=$(wpx '{"op":"search_replace","from":"http://localhost:8080","to":"https://example.org"}'); ok dryrun "$r"
+          echo "$r" | grep -q '"applied":false' || { echo "FAIL dry run applied"; exit 1; }
+          no badurl "$(wpx '{"op":"search_replace","from":"--all","to":"https://x.org"}')" bad_url
+          echo "tools ok"
+      - name: PHP settings
+        run: |
+          docker exec site php -r 'echo ini_get("memory_limit"), " ", ini_get("upload_max_filesize"), " ", ini_get("max_input_vars"), "\n";' | tee /tmp/ini
+          grep -q '^512M 32M 3000$' /tmp/ini || { echo "FAIL: expected 512M 32M and the default 3000 (abc dropped)"; exit 1; }
+      - name: Logs on failure
+        if: failure()
+        run: docker logs site 2>&1 | tail -80

@@ -27,6 +27,19 @@ if [ ! -s "$SALTS" ]; then
   chown www-data:www-data "$SALTS"; chmod 600 "$SALTS"
 fi
 
+# --- per-site PHP settings (the Voroa panel's PHP settings tab sets these env vars) -----------------
+# Each value is checked here against a fixed range; anything else is dropped, so a bad value can never reach PHP.
+# zz-voroa-site.ini sorts after zz-voroa.ini, so a set value wins over the image default.
+SITE_INI=/usr/local/etc/php/conf.d/zz-voroa-site.ini
+: > "$SITE_INI"
+in_range() { case "$1" in ''|*[!0-9]*) return 1;; esac; [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]; }
+if in_range "${PHP_MEMORY_LIMIT_MB:-}" 128 1024; then echo "memory_limit = ${PHP_MEMORY_LIMIT_MB}M" >> "$SITE_INI"; fi
+if in_range "${PHP_UPLOAD_MAX_MB:-}" 2 64; then
+  { echo "upload_max_filesize = ${PHP_UPLOAD_MAX_MB}M"; echo "post_max_size = ${PHP_UPLOAD_MAX_MB}M"; } >> "$SITE_INI"
+fi
+if in_range "${PHP_MAX_EXECUTION_TIME:-}" 30 300; then echo "max_execution_time = ${PHP_MAX_EXECUTION_TIME}" >> "$SITE_INI"; fi
+if in_range "${PHP_MAX_INPUT_VARS:-}" 1000 10000; then echo "max_input_vars = ${PHP_MAX_INPUT_VARS}" >> "$SITE_INI"; fi
+
 # --- php-fpm workers: bounded by memory AND by the database's connection limit ------------------
 MEM_MAX=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)
 if [ "$MEM_MAX" = "max" ]; then MEM_MB=1024; else MEM_MB=$(( MEM_MAX / 1048576 )); fi

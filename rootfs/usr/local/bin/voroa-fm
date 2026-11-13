@@ -1,0 +1,116 @@
+#!/usr/local/bin/php
+<?php
+// voroa-fm - the Managed WordPress file manager's ONE program (Voroa plan 2026-11-13 PR C, CTO r1 D2/H2).
+// Runs as www-data via `docker exec -i -u www-data`. The request arrives as base64(JSON) on STDIN - never on the
+// command line, never inside a shell string. Every path is jailed by realpath to wp-content; symlinks are refused.
+// Output: one JSON object on stdout. Exit 0 always (the caller reads ok/error), except on a broken request.
+declare(strict_types=1);
+
+const ROOT = '/var/www/html/wp-content';
+const MAX_EDIT = 1048576;        // 1 MB: the editor opens text files up to this size
+const MAX_UPLOAD = 67108864;     // 64 MB: same as PHP's upload limit
+const MAX_LIST = 2000;
+const HIDDEN = ['voroa'];        // wp-content/voroa holds the salts - never listed, read or written
+
+function out(array $o): void { echo json_encode($o, JSON_UNESCAPED_SLASHES), "\n"; exit(0); }
+function fail(string $code, string $msg): void { out(['ok' => false, 'code' => $code, 'error' => $msg]); }
+
+$raw = stream_get_contents(STDIN, 96 * 1024 * 1024);
+$req = json_decode((string) base64_decode((string) $raw, true), true);
+if (!is_array($req) || !isset($req['op']) || !is_string($req['op'])) fail('bad_request', 'The request could not be read.');
+
+$root = realpath(ROOT);
+if ($root === false) fail('not_ready', 'The site is still starting.');
+
+// rel -> absolute path inside the jail, or fail. $mustExist: the target itself must exist (else its parent must).
+function jail(string $root, $rel, bool $mustExist): string {
+	if (!is_string($rel) || strlen($rel) > 1024 || strpos($rel, "\0") !== false) fail('bad_path', 'That path is not allowed.');
+	$rel = trim(str_replace('\\', '/', $rel), '/');
+	foreach (explode('/', $rel) as $seg) {
+		if ($seg === '..' || $seg === '.') fail('bad_path', 'That path is not allowed.');
+	}
+	$first = explode('/', $rel)[0];
+	if (in_array($first, HIDDEN, true)) fail('bad_path', 'That path is not allowed.');
+	$abs = $rel === '' ? $root : $root . '/' . $rel;
+	if ($mustExist) {
+		if (is_link($abs)) fail('bad_path', 'Links are not followed.');
+		$real = realpath($abs);
+		if ($real === false) fail('not_found', 'That file or folder does not exist.');
+	} else {
+		$parent = realpath(dirname($abs));
+		if ($parent === false) fail('not_found', 'The folder does not exist.');
+		if (file_exists($abs) && is_link($abs)) fail('bad_path', 'Links are not followed.');
+		$real = $parent . '/' . basename($abs);
+		if (basename($abs) === '' || $rel === '') fail('bad_path', 'That path is not allowed.');
+	}
+	if ($real !== $root && strpos($real, $root . '/') !== 0) fail('bad_path', 'That path is not allowed.');
+	return $real;
+}
+function relOf(string $root, string $abs): string { return ltrim(substr($abs, strlen($root)), '/'); }
+
+switch ($req['op']) {
+	case 'list': {
+		$dir = jail($root, $req['path'] ?? '', true);
+		if (!is_dir($dir)) fail('not_a_folder', 'That is not a folder.');
+		$items = [];
+		foreach (scandir($dir) ?: [] as $name) {
+			if ($name === '.' || $name === '..') continue;
+			if ($dir === $root && in_array($name, HIDDEN, true)) continue;
+			$p = $dir . '/' . $name;
+			$items[] = ['name' => $name, 'type' => is_link($p) ? 'link' : (is_dir($p) ? 'folder' : 'file'),
+				'size' => is_file($p) ? filesize($p) : null, 'modified' => @filemtime($p) ?: null];
+			if (count($items) >= MAX_LIST) break;
+		}
+		out(['ok' => true, 'path' => relOf($root, $dir), 'items' => $items, 'truncated' => count($items) >= MAX_LIST]);
+	}
+	case 'read': {
+		$f = jail($root, $req['path'] ?? '', true);
+		if (!is_file($f)) fail('not_a_file', 'That is not a file.');
+		$size = filesize($f);
+		$asDownload = !empty($req['download']);
+		if (!$asDownload && $size > MAX_EDIT) fail('too_big', 'Files over 1 MB open as a download, not in the editor.');
+		if ($asDownload && $size > MAX_UPLOAD) fail('too_big', 'Files over 64 MB are downloaded over SFTP.');
+		$data = (string) file_get_contents($f);
+		if (!$asDownload && !mb_check_encoding($data, 'UTF-8')) fail('not_text', 'This file is not text. Download it instead.');
+		out(['ok' => true, 'size' => $size, 'contentB64' => base64_encode($data)]);
+	}
+	case 'write': {
+		$f = jail($root, $req['path'] ?? '', false);
+		if (is_dir($f)) fail('is_folder', 'A folder has that name.');
+		$data = base64_decode((string) ($req['contentB64'] ?? ''), true);
+		if ($data === false) fail('bad_request', 'The file content could not be read.');
+		if (strlen($data) > MAX_UPLOAD) fail('too_big', 'Files over 64 MB are uploaded over SFTP.');
+		if (file_put_contents($f . '.voroa-tmp', $data) === false || !rename($f . '.voroa-tmp', $f)) {
+			@unlink($f . '.voroa-tmp');
+			fail('write_failed', 'The file could not be saved.');
+		}
+		out(['ok' => true, 'size' => strlen($data)]);
+	}
+	case 'mkdir': {
+		$d = jail($root, $req['path'] ?? '', false);
+		if (file_exists($d)) fail('exists', 'Something with that name already exists.');
+		if (!mkdir($d, 0755)) fail('write_failed', 'The folder could not be created.');
+		out(['ok' => true]);
+	}
+	case 'rename': {
+		$from = jail($root, $req['path'] ?? '', true);
+		$to = jail($root, $req['newPath'] ?? '', false);
+		if ($from === $root) fail('bad_path', 'That path is not allowed.');
+		if (file_exists($to)) fail('exists', 'Something with that name already exists.');
+		if (!rename($from, $to)) fail('write_failed', 'It could not be renamed.');
+		out(['ok' => true]);
+	}
+	case 'delete': {
+		$t = jail($root, $req['path'] ?? '', true);
+		if ($t === $root) fail('bad_path', 'That path is not allowed.');
+		$rm = function (string $p) use (&$rm): bool {
+			if (is_link($p) || is_file($p)) return unlink($p);
+			foreach (scandir($p) ?: [] as $n) { if ($n !== '.' && $n !== '..' && !$rm($p . '/' . $n)) return false; }
+			return rmdir($p);
+		};
+		if (!$rm($t)) fail('write_failed', 'It could not be deleted completely.');
+		out(['ok' => true]);
+	}
+	default:
+		fail('bad_op', 'That action is not available.');
+}
