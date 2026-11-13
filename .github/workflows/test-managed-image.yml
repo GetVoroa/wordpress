@@ -66,6 +66,34 @@ jobs:
           grep -q '^512M 32M 3000$' /tmp/ini || { echo "FAIL: expected 512M 32M and the default 3000 (abc dropped)"; exit 1; }
           r=$(printf '%s' '{"op":"php"}' | base64 -w0 | docker exec -i -u www-data site /usr/local/bin/voroa-wp)
           echo "$r" | grep -q '"memoryLimit":"512M"' || { echo "FAIL: php op -> $r"; exit 1; }
+      - name: Database browser, export and import
+        run: |
+          set -u
+          wpx() { printf '%s' "$1" | base64 -w0 | docker exec -i -u www-data site /usr/local/bin/voroa-wp; }
+          fm() { printf '%s' "$1" | base64 -w0 | docker exec -i -u www-data site /usr/local/bin/voroa-fm; }
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          [ "$(code http://localhost:8080/voroa-db/)" = 404 ] || { echo "FAIL: open without a link"; exit 1; }
+          T=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')
+          H=$(printf '%s' "$T" | sha256sum | cut -d' ' -f1)
+          wpx "{\"op\":\"adminer_grant\",\"tokenHash\":\"$H\"}" | grep -q '"ok":true' || { echo "FAIL grant"; exit 1; }
+          curl -s -D /tmp/h1 -o /dev/null "http://localhost:8080/voroa-db/?voroa_t=$T"
+          grep -i '^set-cookie: voroa_db=' /tmp/h1 | grep -qi 'httponly' || { echo "FAIL: no HttpOnly session cookie"; cat /tmp/h1; exit 1; }
+          grep -i '^set-cookie: voroa_db=' /tmp/h1 | grep -qi 'samesite=strict' || { echo "FAIL: cookie not SameSite=Strict"; exit 1; }
+          SID=$(grep -i '^set-cookie: voroa_db=' /tmp/h1 | sed 's/.*voroa_db=\([0-9a-f]*\).*/\1/')
+          [ "$(code "http://localhost:8080/voroa-db/?voroa_t=$T")" = 404 ] || { echo "FAIL: a link worked twice"; exit 1; }
+          curl -s -L -c /tmp/jar -b /tmp/jar -H "Cookie: voroa_db=$SID" -o /tmp/adm http://localhost:8080/voroa-db/
+          grep -q 'wp_options' /tmp/adm || { echo "FAIL: Adminer did not open the site database"; head -c 1500 /tmp/adm; exit 1; }
+          grep -q 'start-password-123\|VOROA_DB_PASSWORD' /tmp/adm && { echo "FAIL: a password reached the page"; exit 1; }
+          [ "$(code -H 'Cookie: voroa_db=0000000000000000000000000000000000000000000000000000000000000000' http://localhost:8080/voroa-db/)" = 404 ] || { echo "FAIL: a forged session opened"; exit 1; }
+          r=$(wpx '{"op":"db_export"}'); echo "$r" | grep -q '"path":"voroa-export/database.sql"' || { echo "FAIL export: $r"; exit 1; }
+          SQL='CREATE TABLE voroa_t (a varchar(10)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci; INSERT INTO voroa_t VALUES ("hello");'
+          fm "{\"op\":\"mkdir\",\"path\":\"voroa-import\"}" >/dev/null
+          fm "{\"op\":\"write\",\"path\":\"voroa-import/mysql8.sql\",\"contentB64\":\"$(printf '%s' "$SQL" | base64 -w0)\"}" | grep -q '"ok":true' || { echo "FAIL write dump"; exit 1; }
+          r=$(wpx '{"op":"db_import","path":"voroa-import/mysql8.sql"}'); echo "$r" | grep -q '"ok":true' || { echo "FAIL import: $r"; exit 1; }
+          docker exec -u www-data site wp --path=/var/www/html db query "SELECT a FROM voroa_t" | grep -q hello || { echo "FAIL: imported row missing"; exit 1; }
+          no() { echo "$2" | grep -q "\"code\":\"$3\"" || { echo "FAIL (expected $3): $1 -> $2"; exit 1; }; }
+          no escape "$(wpx '{"op":"db_import","path":"../../etc/x.sql"}')" bad_path
+          echo "database ok"
       - name: Logs on failure
         if: failure()
         run: docker logs site 2>&1 | tail -80

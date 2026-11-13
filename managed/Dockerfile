@@ -45,6 +45,15 @@ RUN set -eux; \
     chown root:root /var/www/html/wp-config.php; chmod 644 /var/www/html/wp-config.php; \
     mkdir -p /var/cache/nginx/wp; chown -R www-data:www-data /var/cache/nginx
 
+# Database browser (Voroa plan 2026-11-13 PR E): Adminer, pinned by version AND checksum, outside the docroot - only
+# /usr/share/voroa-adminer/gate.php can load it, and only for a one-time link from the panel.
+ARG ADMINER_VERSION=6.3.0
+ARG ADMINER_SHA256=8bc0c48b26d0fbbe2698a1766c7afc65a4681c8efbb2f18e2dc57a9530367bbd
+RUN set -eux; \
+    curl -fsSL -o /usr/share/voroa-adminer/adminer.php "https://github.com/vrana/adminer/releases/download/v${ADMINER_VERSION}/adminer-${ADMINER_VERSION}-mysql-en.php"; \
+    echo "${ADMINER_SHA256}  /usr/share/voroa-adminer/adminer.php" | sha256sum -c -; \
+    chown -R root:root /usr/share/voroa-adminer; chmod 644 /usr/share/voroa-adminer/*.php
+
 ENV PORT=3000
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/local/bin/voroa-managed-entrypoint"]
