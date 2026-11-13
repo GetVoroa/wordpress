@@ -121,7 +121,8 @@ jobs:
           echo "$r" | grep -q '"ok":true' || { echo "FAIL migrate: $r"; exit 1; }
           echo "$r" | grep -q '"files":1' || { echo "FAIL files: $r"; exit 1; }
           docker exec site cat /var/www/html/wp-content/uploads/migrated.txt | grep -q 'old host' || { echo "FAIL: zip not unpacked"; exit 1; }
-          docker exec -u www-data site wp --path=/var/www/html option get home | grep -q 'https://moved.example.org' || { echo "FAIL: address not replaced"; exit 1; }
+          # read the stored value (this test container sets WP_HOME, which overrides `option get home`)
+          docker exec -u www-data site wp --path=/var/www/html db query "SELECT option_value FROM wp_options WHERE option_name='home'" | grep -q 'https://moved.example.org' || { echo "FAIL: address not replaced"; exit 1; }
           no evilzip "$(wpx '{"op":"migrate","sqlPath":"voroa-export/database.sql","zipPath":"voroa-import/evil.zip"}')" bad_zip
           docker exec site test ! -e /var/www/html/evil.php || { echo "FAIL: zip-slip wrote outside"; exit 1; }
           no saltszip "$(wpx '{"op":"migrate","sqlPath":"voroa-export/database.sql","zipPath":"voroa-import/salts.zip"}')" bad_zip
