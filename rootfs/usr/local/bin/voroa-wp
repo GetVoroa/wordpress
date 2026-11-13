@@ -90,6 +90,10 @@ switch ($op) {
 		}
 		out(['ok' => true, 'count' => (int) $n, 'applied' => !empty($req['apply'])]);
 	}
+	// The PHP settings the site RUNS with (the panel shows these - read live, not from stored settings).
+	case 'php':
+		out(['ok' => true, 'memoryLimit' => ini_get('memory_limit'), 'uploadMax' => ini_get('upload_max_filesize'),
+			'maxExecutionTime' => (int) ini_get('max_execution_time'), 'maxInputVars' => (int) ini_get('max_input_vars'), 'php' => PHP_VERSION]);
 	case 'site_url':
 		out(['ok' => true, 'home' => trim(must(wp(['option', 'get', 'home', '--skip-plugins', '--skip-themes']), 'The site address could not be read.'))]);
 	default:

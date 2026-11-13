@@ -64,6 +64,8 @@ jobs:
         run: |
           docker exec site php -r 'echo ini_get("memory_limit"), " ", ini_get("upload_max_filesize"), " ", ini_get("max_input_vars"), "\n";' | tee /tmp/ini
           grep -q '^512M 32M 3000$' /tmp/ini || { echo "FAIL: expected 512M 32M and the default 3000 (abc dropped)"; exit 1; }
+          r=$(printf '%s' '{"op":"php"}' | base64 -w0 | docker exec -i -u www-data site /usr/local/bin/voroa-wp)
+          echo "$r" | grep -q '"memoryLimit":"512M"' || { echo "FAIL: php op -> $r"; exit 1; }
       - name: Logs on failure
         if: failure()
         run: docker logs site 2>&1 | tail -80

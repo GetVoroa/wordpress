@@ -9,6 +9,7 @@ declare(strict_types=1);
 const ROOT = '/var/www/html/wp-content';
 const MAX_EDIT = 1048576;        // 1 MB: the editor opens text files up to this size
 const MAX_UPLOAD = 67108864;     // 64 MB: same as PHP's upload limit
+const MAX_DOWNLOAD = 20971520;   // 20 MB: bigger files are downloaded over SFTP
 const MAX_LIST = 2000;
 const HIDDEN = ['voroa'];        // wp-content/voroa holds the salts - never listed, read or written
 
@@ -69,7 +70,7 @@ switch ($req['op']) {
 		$size = filesize($f);
 		$asDownload = !empty($req['download']);
 		if (!$asDownload && $size > MAX_EDIT) fail('too_big', 'Files over 1 MB open as a download, not in the editor.');
-		if ($asDownload && $size > MAX_UPLOAD) fail('too_big', 'Files over 64 MB are downloaded over SFTP.');
+		if ($asDownload && $size > MAX_DOWNLOAD) fail('too_big', 'Files over 20 MB are downloaded over SFTP.');
 		$data = (string) file_get_contents($f);
 		if (!$asDownload && !mb_check_encoding($data, 'UTF-8')) fail('not_text', 'This file is not text. Download it instead.');
 		out(['ok' => true, 'size' => $size, 'contentB64' => base64_encode($data)]);
