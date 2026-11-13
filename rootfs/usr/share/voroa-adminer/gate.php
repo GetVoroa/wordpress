@@ -47,14 +47,16 @@ file_put_contents($sf, 'live'); // also refreshes the idle clock
 // and fills in the site's database account on every request - the gate already decided this browser may in. The
 // password stays in the server-side session file and in this process; it is never sent to the browser.
 require '/data/voroa/db.php';
+// Adminer names a unix socket ':/path' (db.php has 'localhost:/path', the form WordPress reads).
+define('ADM_SERVER', preg_replace('#^localhost(?=:/)#', '', VOROA_DB_HOST));
 ini_set('session.use_cookies', '0');
 ini_set('session.use_only_cookies', '0');
 session_name('adminer_sid');
 session_id(substr(h('adminer:' . $sid), 0, 48));
 session_start();
-$_SESSION['pwds']['server'][VOROA_DB_HOST][VOROA_DB_USER] = VOROA_DB_PASSWORD;
-$_SESSION['db']['server'][VOROA_DB_HOST][VOROA_DB_USER][VOROA_DB_NAME] = true;
-foreach (['server' => VOROA_DB_HOST, 'username' => VOROA_DB_USER, 'db' => VOROA_DB_NAME] as $k => $v) {
+$_SESSION['pwds']['server'][ADM_SERVER][VOROA_DB_USER] = VOROA_DB_PASSWORD;
+$_SESSION['db']['server'][ADM_SERVER][VOROA_DB_USER][VOROA_DB_NAME] = true;
+foreach (['server' => ADM_SERVER, 'username' => VOROA_DB_USER, 'db' => VOROA_DB_NAME] as $k => $v) {
 	if (!isset($_GET[$k]) || $_GET[$k] !== $v) $_GET[$k] = $v; // only this site's database, whatever the URL asked for
 }
 unset($_POST['auth']); // no login form: nobody signs in to another server through this door
@@ -62,7 +64,7 @@ unset($_POST['auth']); // no login form: nobody signs in to another server throu
 function adminer_object() {
 	return new class extends \Adminer\Adminer {
 		function name() { return 'Database'; }
-		function credentials() { return [VOROA_DB_HOST, VOROA_DB_USER, VOROA_DB_PASSWORD]; }
+		function credentials() { return [ADM_SERVER, VOROA_DB_USER, VOROA_DB_PASSWORD]; }
 		function login($login, $password) { return true; }
 		function databases($flush = true) { return [VOROA_DB_NAME]; }
 	};
