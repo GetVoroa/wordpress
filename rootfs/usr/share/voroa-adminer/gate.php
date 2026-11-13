@@ -56,6 +56,9 @@ function adminer_object() {
 		function name() { return 'Database'; }
 		function credentials() { return [VOROA_DB_HOST, VOROA_DB_USER, VOROA_DB_PASSWORD]; }
 		function login($login, $password) { return true; }
+		// The login POST is made by THIS gate, server-side, on the first page of a session it just created from a
+		// one-time link - never by a browser form - so Adminer's login-form CSRF token does not apply to it.
+		function verifyLoginToken() { return false; }
 		function databases($flush = true) { return [VOROA_DB_NAME]; }
 	};
 }
