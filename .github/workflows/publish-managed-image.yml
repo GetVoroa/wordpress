@@ -1,0 +1,45 @@
+# Build each Managed WordPress tag ONCE and publish it, so a site pulls a ready image instead of building from git
+# on its own (often 1 vCPU) machine. Tags are immutable: a tag already published is never rebuilt over.
+name: publish-managed-image
+on:
+  push:
+    tags: ['wpm-*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'An existing wpm-* git tag to publish'
+        required: true
+permissions:
+  contents: read
+  packages: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag
+        id: t
+        run: |
+          T="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "$T" | grep -Eq '^wpm-[0-9][A-Za-z0-9.-]*-r[0-9]+$' || { echo "not a wpm tag: $T"; exit 1; }
+          echo "tag=$T" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.t.outputs.tag }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refuse to overwrite a published tag
+        run: |
+          if docker manifest inspect ghcr.io/getvoroa/wordpress:${{ steps.t.outputs.tag }} >/dev/null 2>&1; then
+            echo "already published - tags are immutable"; exit 1; fi
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: managed/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/getvoroa/wordpress:${{ steps.t.outputs.tag }}
+          labels: org.opencontainers.image.source=https://github.com/GetVoroa/wordpress
