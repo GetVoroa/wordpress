@@ -41,7 +41,7 @@ COPY rootfs/ /
 COPY managed/rootfs/ /
 RUN set -eux; \
     rm -f /usr/local/etc/php-fpm.d/www.conf /usr/local/etc/php-fpm.d/www.conf.default /usr/local/etc/php-fpm.d/docker.conf /usr/local/etc/php-fpm.d/zz-docker.conf /etc/nginx/sites-enabled/default; \
-    chmod 755 /usr/local/bin/voroa-entrypoint /usr/local/bin/voroa-cron /usr/local/bin/voroa-managed-entrypoint /usr/local/bin/voroa-db-dump; \
+    chmod 755 /usr/local/bin/voroa-entrypoint /usr/local/bin/voroa-cron /usr/local/bin/voroa-managed-entrypoint /usr/local/bin/voroa-db-dump /usr/local/bin/voroa-fm /usr/local/bin/voroa-wp; \
     chown root:root /var/www/html/wp-config.php; chmod 644 /var/www/html/wp-config.php; \
     mkdir -p /var/cache/nginx/wp; chown -R www-data:www-data /var/cache/nginx
 

@@ -1,0 +1,101 @@
+#!/usr/local/bin/php
+<?php
+// voroa-wp - the Managed WordPress panel's ONE WordPress program (Voroa plan 2026-11-13 PR C, CTO r1 D6/H2).
+// Runs as www-data via `docker exec -i -u www-data`. The request is base64(JSON) on STDIN. Each action maps to a
+// FIXED wp-cli argv built here - never a free-form command, never a shell (proc_open with an argv array).
+// Output: one JSON object on stdout.
+declare(strict_types=1);
+
+const WP = '/var/www/html';
+
+function out(array $o): void { echo json_encode($o, JSON_UNESCAPED_SLASHES), "\n"; exit(0); }
+function fail(string $code, string $msg): void { out(['ok' => false, 'code' => $code, 'error' => $msg]); }
+
+$req = json_decode((string) base64_decode((string) stream_get_contents(STDIN, 1048576), true), true);
+if (!is_array($req) || !isset($req['op']) || !is_string($req['op'])) fail('bad_request', 'The request could not be read.');
+
+// A plugin/theme slug or a user login: a closed shape, so it can never become a flag or a path.
+function slug($v): string {
+	if (!is_string($v) || !preg_match('/^[a-z0-9][a-z0-9._-]{0,99}$/i', $v)) fail('bad_name', 'That name is not valid.');
+	return $v;
+}
+function url($v): string {
+	if (!is_string($v) || strlen($v) > 300 || !preg_match('#^https?://[a-z0-9.-]+(:[0-9]{1,5})?(/[^\s]*)?$#i', $v)) fail('bad_url', 'That address is not valid.');
+	return rtrim($v, '/');
+}
+
+// run wp-cli with a fixed argv; stdin optional (a password goes there, never on argv).
+function wp(array $args, ?string $stdin = null): array {
+	$argv = array_merge(['/usr/local/bin/wp', '--path=' . WP, '--no-color'], $args);
+	$p = proc_open($argv, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+	if (!is_resource($p)) fail('run_failed', 'The action could not start.');
+	if ($stdin !== null) fwrite($pipes[0], $stdin);
+	fclose($pipes[0]);
+	$o = stream_get_contents($pipes[1]); $e = stream_get_contents($pipes[2]);
+	fclose($pipes[1]); fclose($pipes[2]);
+	return ['code' => proc_close($p), 'out' => (string) $o, 'err' => (string) $e];
+}
+function must(array $r, string $msg): string {
+	if ($r['code'] !== 0) fail('wp_failed', $msg);
+	return $r['out'];
+}
+function jsonList(string $s): array { $v = json_decode($s, true); return is_array($v) ? $v : []; }
+
+$op = $req['op'];
+switch ($op) {
+	case 'plugins':
+		out(['ok' => true, 'items' => jsonList(must(wp(['plugin', 'list', '--fields=name,title,status,version,update,update_version', '--format=json']), 'Plugins could not be listed.'))]);
+	case 'themes':
+		out(['ok' => true, 'items' => jsonList(must(wp(['theme', 'list', '--fields=name,title,status,version,update,update_version', '--format=json']), 'Themes could not be listed.'))]);
+	case 'plugin':
+	case 'theme': {
+		$allowed = $op === 'plugin' ? ['activate', 'deactivate', 'update', 'delete'] : ['activate', 'update', 'delete'];
+		$action = $req['action'] ?? '';
+		if (!in_array($action, $allowed, true)) fail('bad_action', 'That action is not available.');
+		must(wp([$op, $action, slug($req['name'] ?? null)]), "The {$op} could not be changed.");
+		out(['ok' => true]);
+	}
+	// Emergency (works with wp-admin down): every plugin off, or the default theme on - plugins/themes skipped so a
+	// broken one cannot stop the fix.
+	case 'emergency_plugins_off':
+		must(wp(['plugin', 'deactivate', '--all', '--skip-plugins', '--skip-themes']), 'Plugins could not be turned off.');
+		out(['ok' => true]);
+	case 'emergency_default_theme': {
+		$list = jsonList(must(wp(['theme', 'list', '--field=name', '--format=json', '--skip-plugins', '--skip-themes']), 'Themes could not be listed.'));
+		$pick = null;
+		foreach ($list as $n) { if (is_string($n) && preg_match('/^twenty/', $n)) { $pick = $n; } }
+		if ($pick === null) fail('no_default_theme', 'No default WordPress theme is installed.');
+		must(wp(['theme', 'activate', $pick, '--skip-plugins', '--skip-themes']), 'The default theme could not be turned on.');
+		out(['ok' => true, 'theme' => $pick]);
+	}
+	case 'admins':
+		out(['ok' => true, 'items' => jsonList(must(wp(['user', 'list', '--role=administrator', '--fields=user_login,user_email', '--format=json', '--skip-plugins', '--skip-themes']), 'Admins could not be listed.'))]);
+	case 'admin_password': {
+		// the new password arrives in the request and goes to wp-cli on stdin - never echoed back, never logged
+		$pw = $req['password'] ?? '';
+		if (!is_string($pw) || strlen($pw) < 12 || strlen($pw) > 200) fail('bad_password', 'Use a password of 12 to 200 characters.');
+		must(wp(['user', 'update', slug($req['user'] ?? null), '--prompt=user_pass', '--skip-plugins', '--skip-themes', '--skip-email'], $pw . "\n"), 'The password could not be changed.');
+		out(['ok' => true]);
+	}
+	case 'search_replace': {
+		$from = url($req['from'] ?? null); $to = url($req['to'] ?? null);
+		if ($from === $to) fail('same', 'The two addresses are the same.');
+		$args = ['search-replace', $from, $to, '--all-tables-with-prefix', '--precise', '--skip-columns=guid', '--format=count', '--skip-plugins', '--skip-themes'];
+		if (empty($req['apply'])) $args[] = '--dry-run';
+		$n = trim(must(wp($args), 'The addresses could not be replaced.'));
+		if (!empty($req['apply'])) {
+			must(wp(['option', 'update', 'home', $to, '--skip-plugins', '--skip-themes']), 'The site address could not be saved.');
+			must(wp(['option', 'update', 'siteurl', $to, '--skip-plugins', '--skip-themes']), 'The site address could not be saved.');
+			wp(['cache', 'flush', '--skip-plugins', '--skip-themes']);
+		}
+		out(['ok' => true, 'count' => (int) $n, 'applied' => !empty($req['apply'])]);
+	}
+	// The PHP settings the site RUNS with (the panel shows these - read live, not from stored settings).
+	case 'php':
+		out(['ok' => true, 'memoryLimit' => ini_get('memory_limit'), 'uploadMax' => ini_get('upload_max_filesize'),
+			'maxExecutionTime' => (int) ini_get('max_execution_time'), 'maxInputVars' => (int) ini_get('max_input_vars'), 'php' => PHP_VERSION]);
+	case 'site_url':
+		out(['ok' => true, 'home' => trim(must(wp(['option', 'get', 'home', '--skip-plugins', '--skip-themes']), 'The site address could not be read.'))]);
+	default:
+		fail('bad_op', 'That action is not available.');
+}
