@@ -90,6 +90,43 @@ switch ($op) {
 		}
 		out(['ok' => true, 'count' => (int) $n, 'applied' => !empty($req['apply'])]);
 	}
+	// Database browser: store only the SHA-256 of the one-time token the panel minted, with its expiry (gate.php).
+	case 'adminer_grant': {
+		$hash = $req['tokenHash'] ?? '';
+		if (!is_string($hash) || !preg_match('/^[0-9a-f]{64}$/', $hash)) fail('bad_request', 'The link could not be prepared.');
+		$dir = WP . '/wp-content/voroa/adminer/grants';
+		if (!is_dir($dir) && !mkdir($dir, 0700, true)) fail('write_failed', 'The link could not be prepared.');
+		foreach (glob($dir . '/*') ?: [] as $old) { if ((int) @file_get_contents($old) < time()) @unlink($old); }
+		if (file_put_contents($dir . '/' . $hash, (string) (time() + 600)) === false) fail('write_failed', 'The link could not be prepared.');
+		out(['ok' => true, 'expiresIn' => 600]);
+	}
+	// Export: the whole database to wp-content/voroa-export/database.sql (download it from the File Manager or SFTP).
+	case 'db_export': {
+		$dir = WP . '/wp-content/voroa-export';
+		if (!is_dir($dir) && !mkdir($dir, 0750, true)) fail('write_failed', 'The export folder could not be created.');
+		$file = $dir . '/database.sql';
+		must(wp(['db', 'export', $file, '--add-drop-table', '--skip-plugins', '--skip-themes']), 'The database could not be exported.');
+		out(['ok' => true, 'path' => 'voroa-export/database.sql', 'size' => filesize($file)]);
+	}
+	// Import a .sql file already on the site (uploaded with the File Manager or SFTP, inside wp-content). MySQL 8 dumps
+	// name utf8mb4_0900_* collations MariaDB does not have: they are rewritten to utf8mb4_unicode_520_ci first.
+	case 'db_import': {
+		$rel = $req['path'] ?? '';
+		if (!is_string($rel) || !preg_match('#^[A-Za-z0-9._/-]{1,300}\.sql$#', $rel) || strpos($rel, '..') !== false) fail('bad_path', 'Choose a .sql file inside wp-content.');
+		$root = realpath(WP . '/wp-content');
+		$src = realpath(WP . '/wp-content/' . ltrim($rel, '/'));
+		if ($src === false || strpos($src, $root . '/') !== 0 || is_link(WP . '/wp-content/' . ltrim($rel, '/'))) fail('not_found', 'That .sql file was not found in wp-content.');
+		$tmp = tempnam(sys_get_temp_dir(), 'voroa-import');
+		$in = fopen($src, 'rb'); $outF = fopen($tmp, 'wb');
+		if (!$in || !$outF) fail('read_failed', 'The file could not be read.');
+		while (($line = fgets($in)) !== false) { fwrite($outF, preg_replace('/utf8mb4_0900_[a-z_]+/', 'utf8mb4_unicode_520_ci', $line)); }
+		fclose($in); fclose($outF);
+		$r = wp(['db', 'import', $tmp, '--skip-plugins', '--skip-themes']);
+		@unlink($tmp);
+		if ($r['code'] !== 0) fail('wp_failed', 'The import failed: ' . substr(trim($r['err']), 0, 300));
+		wp(['cache', 'flush', '--skip-plugins', '--skip-themes']);
+		out(['ok' => true]);
+	}
 	// The PHP settings the site RUNS with (the panel shows these - read live, not from stored settings).
 	case 'php':
 		out(['ok' => true, 'memoryLimit' => ini_get('memory_limit'), 'uploadMax' => ini_get('upload_max_filesize'),
