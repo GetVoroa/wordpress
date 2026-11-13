@@ -81,8 +81,15 @@ jobs:
           grep -i '^set-cookie: voroa_db=' /tmp/h1 | grep -qi 'samesite=strict' || { echo "FAIL: cookie not SameSite=Strict"; exit 1; }
           SID=$(grep -i '^set-cookie: voroa_db=' /tmp/h1 | sed 's/.*voroa_db=\([0-9a-f]*\).*/\1/')
           [ "$(code "http://localhost:8080/voroa-db/?voroa_t=$T")" = 404 ] || { echo "FAIL: a link worked twice"; exit 1; }
-          curl -s -L -c /tmp/jar -b /tmp/jar -H "Cookie: voroa_db=$SID" -o /tmp/adm http://localhost:8080/voroa-db/
-          grep -q 'wp_options' /tmp/adm || { echo "FAIL: Adminer did not open the site database"; head -c 1500 /tmp/adm; exit 1; }
+          # step by step (a browser's view): the first page logs in server-side and redirects; follow with every cookie
+          curl -s -D /tmp/h2 -o /tmp/b2 -H "Cookie: voroa_db=$SID" http://localhost:8080/voroa-db/
+          echo "--- first page"; grep -iE '^(HTTP|location|set-cookie)' /tmp/h2 | sed 's/=[^;]*;/=<v>;/'
+          LOC=$(grep -i '^location:' /tmp/h2 | sed 's/^[Ll]ocation: *//' | tr -d '\r')
+          ASID=$(grep -i '^set-cookie: adminer_sid=' /tmp/h2 | sed 's/.*adminer_sid=\([^;]*\).*/\1/' | tail -1)
+          case "$LOC" in http*) URL="$LOC";; /*) URL="http://localhost:8080$LOC";; *) URL="http://localhost:8080/voroa-db/$LOC";; esac
+          curl -s -D /tmp/h3 -o /tmp/adm -H "Cookie: voroa_db=$SID; adminer_sid=$ASID" "$URL"
+          echo "--- after login"; grep -iE '^(HTTP|location)' /tmp/h3
+          grep -q 'wp_options' /tmp/adm || { echo "FAIL: Adminer did not open the site database"; grep -o '<div class=.error.>[^<]*' /tmp/adm | head -3; exit 1; }
           grep -q 'start-password-123\|VOROA_DB_PASSWORD' /tmp/adm && { echo "FAIL: a password reached the page"; exit 1; }
           [ "$(code -H 'Cookie: voroa_db=0000000000000000000000000000000000000000000000000000000000000000' http://localhost:8080/voroa-db/)" = 404 ] || { echo "FAIL: a forged session opened"; exit 1; }
           r=$(wpx '{"op":"db_export"}'); echo "$r" | grep -q '"path":"voroa-export/database.sql"' || { echo "FAIL export: $r"; exit 1; }
