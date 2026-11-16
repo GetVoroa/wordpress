@@ -121,7 +121,7 @@ jobs:
           pma -X POST -o /tmp/exp "$B/voroa-db/index.php?route=/export" --data-urlencode "db=wordpress" --data-urlencode "table=wp_options" \
             --data-urlencode "export_type=table" --data-urlencode "quick_or_custom=quick" --data-urlencode "filename_template=@TABLE@" --data-urlencode "what=sql" --data-urlencode "output_format=sendit" \
             --data-urlencode "sql_structure_or_data=structure_and_data" --data-urlencode "charset=utf-8" --data-urlencode "compression=none" --data-urlencode "allrows=1" --data-urlencode "token=$TOK"
-          grep -q 'CREATE TABLE `wp_options`' /tmp/exp || { echo "FAIL export: $(head -c 400 /tmp/exp)"; exit 1; }
+          grep -q 'INSERT INTO `wp_options`' /tmp/exp || { echo "FAIL export: $(grep -v '^--' /tmp/exp | head -c 600)"; exit 1; }
           printf 'CREATE TABLE pma_import_t (a varchar(10));\nINSERT INTO pma_import_t VALUES ("viapma");\n' > /tmp/imp.sql
           pma -o /tmp/impr "$B/voroa-db/index.php?route=/import" -F "db=wordpress" -F "import_type=database" -F "format=sql" -F "charset_of_file=utf-8" \
             -F "sql_compatibility=NONE" -F "token=$TOK" -F "import_file=@/tmp/imp.sql"
