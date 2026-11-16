@@ -33,8 +33,8 @@ if (isset($_GET['voroa_t'])) {
 	if (!preg_match('/^[A-Za-z0-9_-]{32,128}$/', $t)) nope();
 	$g = STATE . '/grants/' . h($t);
 	$exp = is_file($g) ? (int) file_get_contents($g) : 0;
-	@unlink($g);
-	if ($exp < time()) nope();
+	// unlink sirf ek request ke liye succeed hota hai - do saath aaye to doosra 404 (race-safe one-time)
+	if (!@unlink($g) || $exp < time()) nope();
 	$sid = bin2hex(random_bytes(32));
 	file_put_contents(STATE . '/sessions/' . h($sid), 'new');
 	setcookie(COOKIE, $sid, ['path' => '/voroa-db/', 'secure' => true, 'httponly' => true, 'samesite' => 'Strict']);
