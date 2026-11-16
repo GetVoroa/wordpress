@@ -120,8 +120,8 @@ jobs:
           r=$(sql "SELECT 1" "wrong"); echo "$r" | grep -q '"success":true' && { echo "FAIL: a POST without the token ran"; exit 1; }
           pma -X POST -o /tmp/exp "$B/voroa-db/index.php?route=/export" --data-urlencode "db=wordpress" --data-urlencode "table=wp_options" \
             --data-urlencode "export_type=table" --data-urlencode "quick_or_custom=quick" --data-urlencode "filename_template=@TABLE@" --data-urlencode "what=sql" --data-urlencode "output_format=sendit" \
-            --data-urlencode "sql_structure_or_data=structure_and_data" --data-urlencode "charset=utf-8" --data-urlencode "compression=none" --data-urlencode "allrows=1" --data-urlencode "token=$TOK"
-          grep -q 'INSERT INTO `wp_options`' /tmp/exp || { echo "FAIL export: $(grep -v '^--' /tmp/exp | head -c 600)"; exit 1; }
+            --data-urlencode "sql_structure_or_data=structure_and_data" --data-urlencode "charset=utf-8" --data-urlencode "compression=none" --data-urlencode "allrows=1" --data-urlencode "single_table=TRUE" --data-urlencode "sql_type=INSERT" --data-urlencode "sql_insert_syntax=both" --data-urlencode "sql_max_query_size=50000" --data-urlencode "sql_create_table=something" --data-urlencode "sql_utc_time=something" --data-urlencode "token=$TOK"
+          grep -q 'INSERT INTO `wp_options`' /tmp/exp || { echo "FAIL export ($(stat -c %s /tmp/exp) bytes):"; head -c 3000 /tmp/exp; docker logs site 2>&1 | grep -iE 'php|error|fatal' | tail -20; exit 1; }
           printf 'CREATE TABLE pma_import_t (a varchar(10));\nINSERT INTO pma_import_t VALUES ("viapma");\n' > /tmp/imp.sql
           pma -o /tmp/impr "$B/voroa-db/index.php?route=/import" -F "db=wordpress" -F "import_type=database" -F "format=sql" -F "charset_of_file=utf-8" \
             -F "sql_compatibility=NONE" -F "token=$TOK" -F "import_file=@/tmp/imp.sql"
@@ -178,7 +178,7 @@ jobs:
           pma -o /dev/null "$B/voroa-db/index.php?route=/sql&db=wordpress&table=wp_posts&pos=0"
           pma -X POST -o /tmp/big.sql "$B/voroa-db/index.php?route=/export" --data-urlencode "db=wordpress" --data-urlencode "table=big" \
             --data-urlencode "export_type=table" --data-urlencode "quick_or_custom=quick" --data-urlencode "filename_template=@TABLE@" --data-urlencode "what=sql" --data-urlencode "output_format=sendit" \
-            --data-urlencode "sql_structure_or_data=structure_and_data" --data-urlencode "charset=utf-8" --data-urlencode "compression=none" --data-urlencode "allrows=1" --data-urlencode "token=$TOK"
+            --data-urlencode "sql_structure_or_data=structure_and_data" --data-urlencode "charset=utf-8" --data-urlencode "compression=none" --data-urlencode "allrows=1" --data-urlencode "single_table=TRUE" --data-urlencode "sql_type=INSERT" --data-urlencode "sql_insert_syntax=both" --data-urlencode "sql_max_query_size=50000" --data-urlencode "sql_create_table=something" --data-urlencode "sql_utc_time=something" --data-urlencode "token=$TOK"
           ls -l /tmp/big.sql
           [ "$(stat -c %s /tmp/big.sql)" -gt 50000000 ] || { echo "FAIL: 50 MB export incomplete: $(head -c 300 /tmp/big.sql)"; exit 1; }
           PEAK=$(docker exec site cat /sys/fs/cgroup/memory.peak); echo "container memory.peak: $((PEAK/1048576)) MB of 1024"
