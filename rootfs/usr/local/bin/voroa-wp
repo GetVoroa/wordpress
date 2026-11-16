@@ -150,7 +150,8 @@ switch ($op) {
 		}
 		out(['ok' => true, 'count' => (int) $n, 'applied' => !empty($req['apply'])]);
 	}
-	// Database browser: store only the SHA-256 of the one-time token the panel minted, with its expiry (gate.php).
+	// Database browser (phpMyAdmin since r6; op + folder keep the Adminer name - the panel and r4/r5 sites speak it):
+	// store only the SHA-256 of the one-time token the panel minted, with its expiry (gate.php).
 	case 'adminer_grant': {
 		$hash = $req['tokenHash'] ?? '';
 		if (!is_string($hash) || !preg_match('/^[0-9a-f]{64}$/', $hash)) fail('bad_request', 'The link could not be prepared.');

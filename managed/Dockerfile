@@ -45,14 +45,24 @@ RUN set -eux; \
     chown root:root /var/www/html/wp-config.php; chmod 644 /var/www/html/wp-config.php; \
     mkdir -p /var/cache/nginx/wp; chown -R www-data:www-data /var/cache/nginx
 
-# Database browser (Voroa plan 2026-11-13 PR E): Adminer, pinned by version AND checksum, outside the docroot - only
-# /usr/share/voroa-adminer/gate.php can load it, and only for a one-time link from the panel.
-ARG ADMINER_VERSION=6.3.0
-ARG ADMINER_SHA256=8bc0c48b26d0fbbe2698a1766c7afc65a4681c8efbb2f18e2dc57a9530367bbd
+# Database browser (Voroa plan 2026-11-16, replaces Adminer): phpMyAdmin, pinned by version AND checksum, outside the
+# docroot - only /usr/share/voroa-db/gate.php can load it, and only for a one-time link from the panel. Everything the
+# browser never needs (installer, docs, examples, config-storage SQL) is deleted at build.
+ARG PMA_VERSION=5.2.3
+ARG PMA_SHA256=03de2640bb25c9a6f96bc94eae316080b5fd5bd58d769e1318ba9dd94c83364c
 RUN set -eux; \
-    curl -fsSL -o /usr/share/voroa-adminer/adminer.php "https://github.com/vrana/adminer/releases/download/v${ADMINER_VERSION}/adminer-${ADMINER_VERSION}-mysql-en.php"; \
-    echo "${ADMINER_SHA256}  /usr/share/voroa-adminer/adminer.php" | sha256sum -c -; \
-    chown -R root:root /usr/share/voroa-adminer; chmod 644 /usr/share/voroa-adminer/*.php
+    curl -fsSL -o /tmp/pma.tar.gz "https://files.phpmyadmin.net/phpMyAdmin/${PMA_VERSION}/phpMyAdmin-${PMA_VERSION}-english.tar.gz"; \
+    echo "${PMA_SHA256}  /tmp/pma.tar.gz" | sha256sum -c -; \
+    mkdir -p /usr/share/voroa-pma; \
+    tar -xzf /tmp/pma.tar.gz -C /usr/share/voroa-pma --strip-components=1; \
+    rm /tmp/pma.tar.gz; \
+    cd /usr/share/voroa-pma; \
+    rm -rf setup doc examples sql ChangeLog README CONTRIBUTING.md composer.json composer.lock package.json yarn.lock \
+      babel.config.json RELEASE-DATE-* config.sample.inc.php show_config_errors.php url.php robots.txt; \
+    ln -s /etc/voroa-pma/config.inc.php /usr/share/voroa-pma/config.inc.php; \
+    chown -R root:root /usr/share/voroa-pma /usr/share/voroa-db /etc/voroa-pma; \
+    find /usr/share/voroa-pma -type d -exec chmod 755 {} +; find /usr/share/voroa-pma -type f -exec chmod 644 {} +; \
+    chmod 644 /usr/share/voroa-db/*.php /etc/voroa-pma/config.inc.php
 
 ENV PORT=3000
 STOPSIGNAL SIGTERM
