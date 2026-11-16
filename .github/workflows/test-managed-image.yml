@@ -1,6 +1,6 @@
 # Build the Managed WordPress image and prove the panel tools on a REAL running site before a tag is cut:
 # the file manager jail (no escape, no symlink, no hidden salts), the WordPress actions (closed names only), and the
-# per-site PHP settings (a bad value is dropped). Runs on every PR and on main.
+# per-site PHP settings (a bad value is dropped), and the phpMyAdmin database browser door. Runs on every PR and on main.
 name: test-managed-image
 on:
   pull_request:
@@ -20,7 +20,7 @@ jobs:
           docker run -d --name site -e WP_ADMIN_USER=admin -e WP_ADMIN_EMAIL=admin@example.com \
             -e WP_ADMIN_PASSWORD=start-password-123 -e WP_HOME=http://localhost:8080 \
             -e PHP_MEMORY_LIMIT_MB=512 -e PHP_MAX_INPUT_VARS=abc -e PHP_UPLOAD_MAX_MB=32 \
-            -p 8080:3000 wpm-test
+            --memory 1g -p 8080:3000 wpm-test
           for i in $(seq 1 90); do
             docker exec -u www-data site wp --path=/var/www/html core is-installed >/dev/null 2>&1 && break; sleep 2; done
           docker exec -u www-data site wp --path=/var/www/html core is-installed
@@ -66,32 +66,130 @@ jobs:
           grep -q '^512M 32M 3000$' /tmp/ini || { echo "FAIL: expected 512M 32M and the default 3000 (abc dropped)"; exit 1; }
           r=$(printf '%s' '{"op":"php"}' | base64 -w0 | docker exec -i -u www-data site /usr/local/bin/voroa-wp)
           echo "$r" | grep -q '"memoryLimit":"512M"' || { echo "FAIL: php op -> $r"; exit 1; }
-      - name: Database browser, export and import
+      - name: Database browser (phpMyAdmin) - the door
+        run: |
+          set -u
+          wpx() { printf '%s' "$1" | base64 -w0 | docker exec -i -u www-data site /usr/local/bin/voroa-wp; }
+          B=http://localhost:8080
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          grant() { T=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n'); H=$(printf '%s' "$T" | sha256sum | cut -d' ' -f1)
+            wpx "{\"op\":\"adminer_grant\",\"tokenHash\":\"$H\"}" | grep -q '"ok":true' || { echo "FAIL grant"; exit 1; }; }
+          [ "$(code $B/voroa-db/)" = 404 ] || { echo "FAIL: open without a link"; exit 1; }
+          [ "$(code $B/voroa-db/themes/pmahomme/css/theme.css)" = 404 ] || { echo "FAIL: static file served without the door cookie"; exit 1; }
+          grant
+          curl -s -D /tmp/h1 -o /dev/null "$B/voroa-db/?voroa_t=$T"
+          grep -i '^set-cookie: voroa_db=' /tmp/h1 | grep -qi 'httponly' || { echo "FAIL: no HttpOnly session cookie"; cat /tmp/h1; exit 1; }
+          grep -i '^set-cookie: voroa_db=' /tmp/h1 | grep -qi 'samesite=strict' || { echo "FAIL: cookie not SameSite=Strict"; exit 1; }
+          SID=$(grep -i '^set-cookie: voroa_db=' /tmp/h1 | sed 's/.*voroa_db=\([0-9a-f]*\).*/\1/' | tr -d '\r')
+          [ "$(code "$B/voroa-db/?voroa_t=$T")" = 404 ] || { echo "FAIL: a link worked twice"; exit 1; }
+          # a cookie jar like a browser's (the door cookie is Secure; this test talks plain http, so it is seeded by hand)
+          printf 'localhost\tFALSE\t/voroa-db/\tFALSE\t0\tvoroa_db\t%s\n' "$SID" > /tmp/jar
+          pma() { curl -s -b /tmp/jar -c /tmp/jar "$@"; }
+          pma -L --max-redirs 3 -D /tmp/ph -o /tmp/home "$B/voroa-db/"
+          grep -iE '^(HTTP|location|set-cookie)' /tmp/ph | sed 's/=[^;]*;/=<v>;/'
+          pma -o /tmp/st "$B/voroa-db/index.php?route=/database/structure&db=wordpress"
+          grep -q 'wp_options' /tmp/st || { echo "FAIL: phpMyAdmin did not open the site database"; head -c 1500 /tmp/st; exit 1; }
+          grep -q 'start-password-123\|VOROA_DB_PASSWORD' /tmp/home /tmp/st && { echo "FAIL: a password reached the page"; exit 1; }
+          [ "$(code -H 'Cookie: voroa_db=0000000000000000000000000000000000000000000000000000000000000000' $B/voroa-db/)" = 404 ] || { echo "FAIL: a forged session opened"; exit 1; }
+          PMAC=$(awk -F'\t' '$6 ~ /phpMyAdmin/ {print $6"="$7}' /tmp/jar | tail -1)
+          [ -n "$PMAC" ] || { echo "FAIL: phpMyAdmin set no session cookie"; cat /tmp/jar; exit 1; }
+          [ "$(code -H "Cookie: $PMAC" $B/voroa-db/)" = 404 ] || { echo "FAIL: phpMyAdmin's cookie alone opened the browser"; exit 1; }
+          for p in setup/ setup/index.php show_config_errors.php url.php js/x.php libraries/constants.php config.inc.php vendor/autoload.php; do
+            [ "$(code -b /tmp/jar "$B/voroa-db/$p")" = 404 ] || { echo "FAIL: $p reachable"; exit 1; }; done
+          [ "$(code -b /tmp/jar $B/voroa-db/themes/pmahomme/css/theme.css)" = 200 ] || { echo "FAIL: theme css not served with the cookie"; exit 1; }
+          [ "$(code -b /tmp/jar $B/voroa-db/themes/pmahomme/img/arrow_ltr.png)" = 200 ] || { echo "FAIL: theme image not served"; exit 1; }
+          [ "$(code -b /tmp/jar $B/voroa-db/js/dist/common.js)" = 200 ] || { echo "FAIL: js not served"; exit 1; }
+          pma -o /tmp/other "$B/voroa-db/index.php?route=/database/structure&db=mysql"
+          grep -q 'columns_priv' /tmp/other && { echo "FAIL: another database is readable"; exit 1; }
+          pma -o /tmp/srv "$B/voroa-db/index.php?route=/database/structure&db=mysql&server=2"
+          grep -q 'columns_priv' /tmp/srv && { echo "FAIL: server= override reached another database"; exit 1; }
+          if grep -il 'deprecat\|Warning:\|Notice:\|TempDir' /tmp/home /tmp/st; then echo "FAIL: PHP notice/deprecation on a page"; grep -io '.\{80\}\(deprecat\|warning:\|notice:\|tempdir\).\{120\}' /tmp/home /tmp/st | head -5; exit 1; fi
+          echo "door ok"
+      - name: Database browser (phpMyAdmin) - writes go through the CSRF token
+        run: |
+          set -u
+          B=http://localhost:8080
+          pma() { curl -s -b /tmp/jar -c /tmp/jar "$@"; }
+          TOK=$(grep -o 'name="token" value="[^"]*"' /tmp/st | head -1 | sed 's/.*value="//; s/"$//')
+          [ -n "$TOK" ] || TOK=$(grep -o '"token":"[^"]*"' /tmp/st | head -1 | sed 's/.*:"//; s/"$//')
+          [ -n "$TOK" ] || { echo "FAIL: no token on the page"; exit 1; }
+          sql() { pma -X POST "$B/voroa-db/index.php?route=/sql" --data-urlencode "db=wordpress" --data-urlencode "sql_query=$1" --data-urlencode "ajax_request=true" --data-urlencode "token=$2"; }
+          r=$(sql "SELECT option_name FROM wp_options LIMIT 1" "$TOK"); echo "$r" | grep -q '"success":true' || { echo "FAIL sql: $(echo "$r" | head -c 400)"; exit 1; }
+          r=$(sql "UPDATE wp_options SET option_value='pma-edited' WHERE option_name='blogdescription'" "$TOK"); echo "$r" | grep -q '"success":true' || { echo "FAIL edit: $(echo "$r" | head -c 400)"; exit 1; }
+          docker exec -u www-data site wp --path=/var/www/html option get blogdescription | grep -q pma-edited || { echo "FAIL: row not edited"; exit 1; }
+          r=$(sql "SELECT 1" "wrong"); echo "$r" | grep -q '"success":true' && { echo "FAIL: a POST without the token ran"; exit 1; }
+          pma -X POST -o /tmp/exp "$B/voroa-db/index.php?route=/export" --data-urlencode "db=wordpress" --data-urlencode "table=wp_options" \
+            --data-urlencode "export_type=table" --data-urlencode "export_method=quick" --data-urlencode "what=sql" --data-urlencode "output_format=sendit" \
+            --data-urlencode "sql_structure_or_data=structure_and_data" --data-urlencode "charset=utf-8" --data-urlencode "compression=none" --data-urlencode "allrows=1" --data-urlencode "token=$TOK"
+          grep -q 'CREATE TABLE `wp_options`' /tmp/exp || { echo "FAIL export: $(head -c 400 /tmp/exp)"; exit 1; }
+          printf 'CREATE TABLE pma_import_t (a varchar(10));\nINSERT INTO pma_import_t VALUES ("viapma");\n' > /tmp/imp.sql
+          pma -o /tmp/impr "$B/voroa-db/index.php?route=/import" -F "db=wordpress" -F "import_type=database" -F "format=sql" -F "charset_of_file=utf-8" \
+            -F "sql_compatibility=NONE" -F "token=$TOK" -F "import_file=@/tmp/imp.sql"
+          docker exec -u www-data site wp --path=/var/www/html db query "SELECT a FROM pma_import_t" | grep -q viapma || { echo "FAIL import: $(head -c 600 /tmp/impr)"; exit 1; }
+          echo "writes ok"
+      - name: Database browser (phpMyAdmin) - rate limits, logout, failed login
+        run: |
+          set -u
+          wpx() { printf '%s' "$1" | base64 -w0 | docker exec -i -u www-data site /usr/local/bin/voroa-wp; }
+          B=http://localhost:8080
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          pma() { curl -s -b /tmp/jar -c /tmp/jar "$@"; }
+          # browsing: 30 page/ajax calls + 40 static files back to back, none throttled, and wp-login.php untouched
+          n429=0; for i in $(seq 1 30); do c=$(code -b /tmp/jar "$B/voroa-db/index.php?route=/navigation&ajax_request=true"); [ "$c" = 429 ] && n429=$((n429+1)); done
+          for f in themes/pmahomme/css/theme.css js/dist/common.js js/dist/ajax.js themes/pmahomme/img/arrow_ltr.png; do for i in 1 2 3 4 5 6 7 8 9 10; do
+            c=$(code -b /tmp/jar "$B/voroa-db/$f"); [ "$c" = 429 ] && n429=$((n429+1)); done; done
+          [ "$n429" = 0 ] || { echo "FAIL: $n429 requests got 429 while browsing"; exit 1; }
+          [ "$(code $B/wp-login.php)" = 200 ] || { echo "FAIL: wp-login.php throttled by the database browser"; exit 1; }
+          # logout ends the door session
+          pma -o /tmp/lo "$B/voroa-db/?voroa_logout=1"; grep -q 'Signed out' /tmp/lo || { echo "FAIL logout page"; exit 1; }
+          [ "$(code -b /tmp/jar $B/voroa-db/)" = 404 ] || { echo "FAIL: session alive after logout"; exit 1; }
+          # a failing database login lands on the final page - no redirect loop
+          T=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n'); H=$(printf '%s' "$T" | sha256sum | cut -d' ' -f1)
+          wpx "{\"op\":\"adminer_grant\",\"tokenHash\":\"$H\"}" | grep -q '"ok":true'
+          curl -s -D /tmp/h4 -o /dev/null "$B/voroa-db/?voroa_t=$T"
+          SID2=$(grep -i '^set-cookie: voroa_db=' /tmp/h4 | sed 's/.*voroa_db=\([0-9a-f]*\).*/\1/' | tr -d '\r')
+          printf 'localhost\tFALSE\t/voroa-db/\tFALSE\t0\tvoroa_db\t%s\n' "$SID2" > /tmp/jar2
+          docker exec site mariadb -uroot -e "ALTER USER wordpress@localhost IDENTIFIED BY 'wrong-pass-123'"
+          curl -s -b /tmp/jar2 -c /tmp/jar2 -L --max-redirs 3 -o /tmp/fail "$B/voroa-db/" || true
+          docker exec site sh -c 'P=$(php -r "require \"/data/voroa/db.php\"; echo VOROA_DB_PASSWORD;"); mariadb -uroot -e "ALTER USER wordpress@localhost IDENTIFIED BY \"$P\""'
+          docker exec -u www-data site wp --path=/var/www/html db query "SELECT 1" >/dev/null || { echo "FAIL: password not restored"; exit 1; }
+          grep -q 'session has ended' /tmp/fail || { echo "FAIL: failed login did not reach the final page: $(head -c 300 /tmp/fail)"; exit 1; }
+          # the one-time-link arrival has its own limit: let the bucket refill, then 1-6 pass, the 7th is 429
+          sleep 61
+          for i in 1 2 3 4 5 6; do c=$(code "$B/voroa-db/?voroa_t=invalidinvalidinvalidinvalidinvalid$i"); [ "$c" = 429 ] && { echo "FAIL: arrival $i got 429"; exit 1; }; done
+          [ "$(code "$B/voroa-db/?voroa_t=invalidinvalidinvalidinvalidinvalid7")" = 429 ] || { echo "FAIL: 7th arrival not limited"; exit 1; }
+          echo "limits/logout ok"
+      - name: Database browser (phpMyAdmin) - memory on a 1 GB site
+        run: |
+          set -u
+          wpx() { printf '%s' "$1" | base64 -w0 | docker exec -i -u www-data site /usr/local/bin/voroa-wp; }
+          B=http://localhost:8080
+          docker exec -u www-data site wp --path=/var/www/html db query "CREATE TABLE big (id int auto_increment primary key, v longtext); INSERT INTO big (v) SELECT REPEAT('x', 1048576) FROM seq_1_to_50;"
+          sleep 40  # the arrival bucket refills (the previous step used it up on purpose)
+          T=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n'); H=$(printf '%s' "$T" | sha256sum | cut -d' ' -f1)
+          wpx "{\"op\":\"adminer_grant\",\"tokenHash\":\"$H\"}" | grep -q '"ok":true'
+          curl -s -D /tmp/h5 -o /dev/null "$B/voroa-db/?voroa_t=$T"
+          SID3=$(grep -i '^set-cookie: voroa_db=' /tmp/h5 | sed 's/.*voroa_db=\([0-9a-f]*\).*/\1/' | tr -d '\r')
+          printf 'localhost\tFALSE\t/voroa-db/\tFALSE\t0\tvoroa_db\t%s\n' "$SID3" > /tmp/jar3
+          pma() { curl -s -b /tmp/jar3 -c /tmp/jar3 "$@"; }
+          pma -o /tmp/st3 "$B/voroa-db/index.php?route=/database/structure&db=wordpress"
+          TOK=$(grep -o 'name="token" value="[^"]*"' /tmp/st3 | head -1 | sed 's/.*value="//; s/"$//')
+          [ -n "$TOK" ] || TOK=$(grep -o '"token":"[^"]*"' /tmp/st3 | head -1 | sed 's/.*:"//; s/"$//')
+          pma -o /dev/null "$B/voroa-db/index.php?route=/sql&db=wordpress&table=wp_posts&pos=0"
+          pma -X POST -o /tmp/big.sql "$B/voroa-db/index.php?route=/export" --data-urlencode "db=wordpress" --data-urlencode "table=big" \
+            --data-urlencode "export_type=table" --data-urlencode "export_method=quick" --data-urlencode "what=sql" --data-urlencode "output_format=sendit" \
+            --data-urlencode "sql_structure_or_data=structure_and_data" --data-urlencode "charset=utf-8" --data-urlencode "compression=none" --data-urlencode "allrows=1" --data-urlencode "token=$TOK"
+          ls -l /tmp/big.sql
+          [ "$(stat -c %s /tmp/big.sql)" -gt 50000000 ] || { echo "FAIL: 50 MB export incomplete: $(head -c 300 /tmp/big.sql)"; exit 1; }
+          PEAK=$(docker exec site cat /sys/fs/cgroup/memory.peak); echo "container memory.peak: $((PEAK/1048576)) MB of 1024"
+          [ "$PEAK" -lt 1000000000 ] || { echo "FAIL: memory over the 1 GB plan"; exit 1; }
+          docker exec -u www-data site wp --path=/var/www/html db query "DROP TABLE big"
+          echo "memory ok"
+      - name: Export and import (panel tools)
         run: |
           set -u
           wpx() { printf '%s' "$1" | base64 -w0 | docker exec -i -u www-data site /usr/local/bin/voroa-wp; }
           fm() { printf '%s' "$1" | base64 -w0 | docker exec -i -u www-data site /usr/local/bin/voroa-fm; }
-          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
-          [ "$(code http://localhost:8080/voroa-db/)" = 404 ] || { echo "FAIL: open without a link"; exit 1; }
-          T=$(head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')
-          H=$(printf '%s' "$T" | sha256sum | cut -d' ' -f1)
-          wpx "{\"op\":\"adminer_grant\",\"tokenHash\":\"$H\"}" | grep -q '"ok":true' || { echo "FAIL grant"; exit 1; }
-          curl -s -D /tmp/h1 -o /dev/null "http://localhost:8080/voroa-db/?voroa_t=$T"
-          grep -i '^set-cookie: voroa_db=' /tmp/h1 | grep -qi 'httponly' || { echo "FAIL: no HttpOnly session cookie"; cat /tmp/h1; exit 1; }
-          grep -i '^set-cookie: voroa_db=' /tmp/h1 | grep -qi 'samesite=strict' || { echo "FAIL: cookie not SameSite=Strict"; exit 1; }
-          SID=$(grep -i '^set-cookie: voroa_db=' /tmp/h1 | sed 's/.*voroa_db=\([0-9a-f]*\).*/\1/')
-          [ "$(code "http://localhost:8080/voroa-db/?voroa_t=$T")" = 404 ] || { echo "FAIL: a link worked twice"; exit 1; }
-          # step by step (a browser's view): the first page logs in server-side and redirects; follow with every cookie
-          curl -s -D /tmp/h2 -o /tmp/b2 -H "Cookie: voroa_db=$SID" http://localhost:8080/voroa-db/
-          echo "--- first page"; grep -iE '^(HTTP|location|set-cookie)' /tmp/h2 | sed 's/=[^;]*;/=<v>;/'
-          LOC=$(grep -i '^location:' /tmp/h2 | sed 's/^[Ll]ocation: *//' | tr -d '\r')
-          ASID=$(grep -i '^set-cookie: adminer_sid=' /tmp/h2 | sed 's/.*adminer_sid=\([^;]*\).*/\1/' | tail -1)
-          case "$LOC" in http*) URL="$LOC";; /*) URL="http://localhost:8080$LOC";; *) URL="http://localhost:8080/voroa-db/$LOC";; esac
-          curl -s -D /tmp/h3 -o /tmp/adm -H "Cookie: voroa_db=$SID; adminer_sid=$ASID" "$URL"
-          echo "--- after login"; grep -iE '^(HTTP|location)' /tmp/h3
-          grep -q 'wp_options' /tmp/adm || { echo "FAIL: Adminer did not open the site database"; grep -o '<div class=.error.>[^<]*' /tmp/adm | head -3; exit 1; }
-          grep -q 'start-password-123\|VOROA_DB_PASSWORD' /tmp/adm && { echo "FAIL: a password reached the page"; exit 1; }
-          [ "$(code -H 'Cookie: voroa_db=0000000000000000000000000000000000000000000000000000000000000000' http://localhost:8080/voroa-db/)" = 404 ] || { echo "FAIL: a forged session opened"; exit 1; }
           r=$(wpx '{"op":"db_export"}'); echo "$r" | grep -q '"path":"voroa-export/database.sql"' || { echo "FAIL export: $r"; exit 1; }
           SQL='CREATE TABLE voroa_t (a varchar(10)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci; INSERT INTO voroa_t VALUES ("hello");'
           fm "{\"op\":\"mkdir\",\"path\":\"voroa-import\"}" >/dev/null

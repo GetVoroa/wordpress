@@ -35,6 +35,12 @@ fi
 chown root:www-data "$CRED"; chmod 640 "$CRED"
 export DB_MAX_CONNECTIONS=40
 
+# Database browser (phpMyAdmin): a fresh cookie-encryption secret per start (nothing it protects outlives a restart),
+# readable by php-fpm (www-data) only; and its temp/twig-cache dir (without it every page shows a TempDir warning).
+php -r 'echo bin2hex(random_bytes(32)), "\n";' > /etc/voroa-pma/secret
+chown root:www-data /etc/voroa-pma/secret; chmod 640 /etc/voroa-pma/secret
+mkdir -p /tmp/voroa-pma; chown www-data:www-data /tmp/voroa-pma; chmod 700 /tmp/voroa-pma
+
 /usr/local/bin/voroa-entrypoint &
 WEB=$!
 
