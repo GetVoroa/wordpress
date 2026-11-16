@@ -119,7 +119,7 @@ jobs:
           docker exec -u www-data site wp --path=/var/www/html option get blogdescription | grep -q pma-edited || { echo "FAIL: row not edited"; exit 1; }
           r=$(sql "SELECT 1" "wrong"); echo "$r" | grep -q '"success":true' && { echo "FAIL: a POST without the token ran"; exit 1; }
           pma -X POST -o /tmp/exp "$B/voroa-db/index.php?route=/export" --data-urlencode "db=wordpress" --data-urlencode "table=wp_options" \
-            --data-urlencode "export_type=table" --data-urlencode "export_method=quick" --data-urlencode "what=sql" --data-urlencode "output_format=sendit" \
+            --data-urlencode "export_type=table" --data-urlencode "quick_or_custom=quick" --data-urlencode "filename_template=@TABLE@" --data-urlencode "what=sql" --data-urlencode "output_format=sendit" \
             --data-urlencode "sql_structure_or_data=structure_and_data" --data-urlencode "charset=utf-8" --data-urlencode "compression=none" --data-urlencode "allrows=1" --data-urlencode "token=$TOK"
           grep -q 'CREATE TABLE `wp_options`' /tmp/exp || { echo "FAIL export: $(head -c 400 /tmp/exp)"; exit 1; }
           printf 'CREATE TABLE pma_import_t (a varchar(10));\nINSERT INTO pma_import_t VALUES ("viapma");\n' > /tmp/imp.sql
@@ -177,7 +177,7 @@ jobs:
           [ -n "$TOK" ] || TOK=$(grep -o '"token":"[^"]*"' /tmp/st3 | head -1 | sed 's/.*:"//; s/"$//')
           pma -o /dev/null "$B/voroa-db/index.php?route=/sql&db=wordpress&table=wp_posts&pos=0"
           pma -X POST -o /tmp/big.sql "$B/voroa-db/index.php?route=/export" --data-urlencode "db=wordpress" --data-urlencode "table=big" \
-            --data-urlencode "export_type=table" --data-urlencode "export_method=quick" --data-urlencode "what=sql" --data-urlencode "output_format=sendit" \
+            --data-urlencode "export_type=table" --data-urlencode "quick_or_custom=quick" --data-urlencode "filename_template=@TABLE@" --data-urlencode "what=sql" --data-urlencode "output_format=sendit" \
             --data-urlencode "sql_structure_or_data=structure_and_data" --data-urlencode "charset=utf-8" --data-urlencode "compression=none" --data-urlencode "allrows=1" --data-urlencode "token=$TOK"
           ls -l /tmp/big.sql
           [ "$(stat -c %s /tmp/big.sql)" -gt 50000000 ] || { echo "FAIL: 50 MB export incomplete: $(head -c 300 /tmp/big.sql)"; exit 1; }
